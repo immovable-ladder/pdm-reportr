@@ -63,14 +63,9 @@ st_options('footnote', NA)
 # This is where the data from Ona gets pulled into R for processing
 # You shouldn't need to make any changes here. If you encounter errors with importing contact hcamp@mercycorps.org
 
-# Assign form and permissions objects
-form_id <- "406847"
-username <- "hannalcamp"
-password <- "ww123ona"
-
 # GET the information from Ona, using the form_id, username and password params
- ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/",form_id), 
-                       authenticate(username, password))
+ ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", params$form_id), 
+                       authenticate(params$username, params$password))
 
 # Makes the dataframe with submissions from Ona
  ona_df <-

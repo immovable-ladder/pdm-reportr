@@ -8,9 +8,9 @@ output:
     reference_docx: ./wordStylesReferenceMC.docx
   pdf_document: default
 params:
-  form_id: '406847'
-  password: ''
-  username: ''
+  form_id: NA
+  password: NA
+  username: NA
 ---
 
 ```{r setup, include=FALSE}
@@ -29,7 +29,7 @@ knitr::opts_chunk$set(dpi = 300, fig.width=6)
 # Checks if necessary packages are installed on the system, if not installs them
 # Need to be online for this to work, and may take some time the first time your run. Only required to install once
 # and will run much faster the second time
-list.of.packages <- c("rmarkdown", "httr", "jsonlite", "stringr", "knitr", "dplyr", "lubridate", "ggplot2", "ggthemes", "pander", "reshape", "summarytools")
+list.of.packages <- c("rmarkdown", "httr", "jsonlite", "stringr", "knitr", "dplyr", "lubridate", "ggplot2", "ggthemes", "pander", "reshape", "summarytools", "here")
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages)
 
@@ -46,6 +46,7 @@ library(pander)    # for markdown formatting
 library(ggthemes)  # for graphics
 library(reshape)   # for changing dfs from wide to long
 library(summarytools) # on some machines this may require installing an Xquartz library locally
+library(here)      # for file path referencing
 
 # renv is used to track package dependencies and store a working snapshot that can always be used as a backup in case a package upgrade throws things off
 ## renv::revert(commit = '')
@@ -64,13 +65,14 @@ st_options('footnote', NA)
 # You shouldn't need to make any changes here. If you encounter errors with importing contact hcamp@mercycorps.org
 
 # GET the information from Ona, using the form_id, username and password params
- ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", params$form_id), 
-                       authenticate(params$username, params$password))
+  #ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", params$form_id), 
+                         ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", "406847"), 
+                        authenticate("hannalcamp", "ww123ona"))
 
 # Makes the dataframe with submissions from Ona
- ona_df <-
-   content(ona_raw_request,"text") %>%  # this gets the actual context from the HTTP request
-   fromJSON()                           # This converts the JSON to an R dataframe
+  ona_df <-
+    content(ona_raw_request,"text") %>%  # this gets the actual context from the HTTP request
+    fromJSON()                           # This converts the JSON to an R dataframe
 
 # putting dates into a useable format
   # ona_df$ymdDate <- ymd(ona_df$today)
@@ -79,7 +81,7 @@ st_options('footnote', NA)
   # save(ona_df, file = "ona_df.RData")
 
 # loading saved Ona df, if needed
- # load("ona_df.RData")
+  # load("ona_df.RData")
 
 ```
 
@@ -122,7 +124,7 @@ format_chart <- function(textang = 0, legend_name = "Legend") {
 ```
 
 
-```{r pre_process, include = FALSE}
+```{r pre_process, include = FALSE, cache = FALSE}
 ## if distributions need to be labeled programmatically, code should be added here
 # may need to embed in a shiny app
 
@@ -133,14 +135,14 @@ ona_df <- as.data.frame(lapply(ona_df, trimws))
 names(ona_df) <- names
 
 # load data dictionary to determine which Ona variable names match to the necessary objects
-data_dict <- read.csv("./AutoPDMReport_datadictionary.csv", stringsAsFactors = FALSE)
+data_dict <- read.csv("AutoPDMReport_datadictionary.csv", stringsAsFactors = FALSE)
 
 # create named list of var names for referencing
 vars <- as.list(data_dict[, 2])
 names(vars) <- data_dict[, 1]
 
 # store codebook table for uncoding data
-codebook <- read.csv("./AutoPDMReport_codebook.csv", stringsAsFactors = FALSE)
+codebook <- read.csv("AutoPDMReport_codebook.csv", stringsAsFactors = FALSE)
 codebook_vars <- unique(codebook$auto_var)
 
 # uncode coded data
@@ -155,10 +157,13 @@ for (i in seq_along(codebook_vars)) {
 ona_df[[vars$time_tosite]] <- factor(ona_df[[vars$time_tosite]],levels = c("<30 minutes", "30 mins - 1 hour", "1-2 hours", ">2 hours"))
 ona_df[[vars$time_atsite]] <- factor(ona_df[[vars$time_atsite]], levels = c("<30 minutes", "30 mins - 1 hour", "1-2 hours", ">2 hours"))
 
+lookup_yn <- data.frame(factor = c("yes", "no"),
+                        value = c(1, 0))
+
 # calculate CSI scores for later charting
 
 ## Create lookup table to decode variable names into strings and assign weights
-  lookup_csi <- data.frame(factor = c(copinga_food_lesspref, copinga_food_help, copinga_food_fewmeals, copinga_food_lessadult, copinga_food_mealsize), 
+  lookup_csi <- data.frame(factor = c(vars$copinga_food_lesspref, vars$copinga_food_help, vars$copinga_food_fewmeals, vars$copinga_food_lessadult, vars$copinga_food_mealsize), 
                            strategies = c("Relied on less preferred, less expensive food", 
                                           "Borrowed food or relied on help from friends or relatives", 
                                           "Reduced the number of meals eaten per day", 
@@ -538,7 +543,6 @@ pandoc.table(table)
 ```{r, echo = FALSE}
 
 filtered <- select(ona_df, one_of(vars$id, vars$hoh, vars$worked_pastmonth, vars$malnutrition, vars$breadwinner_lost, vars$breadwinner_nowork)) %>%   
-  mutate_at(vars(one_of(vars$hoh, vars$worked_pastmonth, vars$malnutrition, vars$breadwinner_lost, vars$breadwinner_nowork)), funs(lookup_capitalize$value[match(., lookup_capitalize$factor)])) %>% 
   melt(., id.vars = vars$id)
 
 ggplot(filtered, aes(x = rev(variable), fill = value)) +
@@ -643,11 +647,11 @@ ggplot(filtered, aes(x = variable, y = value)) +
 
 ### Coping Strategies Index (all distributions)
 
-As noted in the World Food Programme's [Coping Strategies Index Manual](https://documents.wfp.org/stellent/groups/public/documents/manual_guide_proced/wfp211058.pdf), the basic logic of the Coping Strategies Index (CSI) is to help analysts understand the target population's answer(s) to the following question: "What do you do when you don’t have enough food, and don’t have enough money to buy food?" There are common short-term and long-term coping strategies that are relatively universal, and the prevalence of each can help to illustrate the severity of food insecurity in a target population.
+As noted in the World Food Programme's [Coping Strategies Index Manual](https://documents.wfp.org/stellent/groups/public/documents/manual_guide_proced/wfp211058.pdf), the logic of the Coping Strategies Index (CSI) is to help analysts understand the target population's answer(s) to the following question: "What do you do when you don’t have enough food, and don’t have enough money to buy food?" From the manual: "The basic idea is to measure the frequency of these coping behaviors (how often is the coping strategy used?) and the severity of the strategies (what degree of food insecurity do they suggest?). Information on the frequency and severity is then combined in a single score, the Coping Strategies Index, which is an indicator of the household’s food security status."
 
-From the manual: "The basic idea is to measure the frequency of these coping behaviors (how often is the coping strategy used?) and the severity of the strategies (what degree of food insecurity do they suggest?). Information on the frequency and severity is then combined in a single score, the Coping Strategies Index, which is an indicator of the household’s food security status."
+The Reduced Coping Strategies Index (rCSI) tracks five common short-term and long-term coping strategies that are relatively universal, and the prevalence of each can help to illustrate the severity of food insecurity in a target population in a manner that is comparable to other contexts.
 
-The coping strategies used to construct the Food CSI in this report are listed here:
+The coping strategies used to construct the rCSI in this report are listed here:
 
 ```{r table6, echo = FALSE}
 
@@ -669,11 +673,11 @@ data.frame(Strategies, Weights) %>% kable()
 
 ##### Insert qualitative analysis about the coping strategies used by the community prior to the distribution here.
 
-Calculation of the CSI score for each household was done according to the following equation:
+Calculation of the rCSI score for each household was done according to the following equation:
 
-$$HH CSI = \Sigma (# of days HH utilized CS * weight value of CS)$$
+$$HH rCSI = \Sigma (# of days HH utilized CS * weight value of CS)$$
 
-The maximum value of the CSI per household is `r 7*sum(1, 2, 1, 3, 1)`.
+The maximum value of the rCSI per household is `r 7*sum(1, 2, 1, 3, 1)`.
 
 #### Figure 12: Coping Strategies Index scores disaggregated by location
 ```{r, echo=F, message=F, warning=F}
@@ -684,7 +688,7 @@ ggplot(scores, aes(x = !!sym(vars$geo), y = household_csi)) +
   geom_boxplot(aes(fill = !!sym(vars$geo)), colour = "black", width = 0.5,
                show.legend = FALSE, outlier.shape = NA, alpha = 0.4) +
   xlab("") +
-  ylab(paste0("CSI Score (max = ", as.character(7*sum(1, 2, 1, 3, 1)), ")")) +
+  ylab(paste0("rCSI Score (max = ", as.character(7*sum(1, 2, 1, 3, 1)), ")")) +
   theme_bw() +
   theme(axis.text.x = element_text(face = "bold", angle = 45, hjust = 1)) +
   scale_fill_pander(guide = FALSE) +
@@ -698,7 +702,7 @@ ggplot(scores, aes(x = !!sym(vars$geo), y = household_csi)) +
 #### Figure 13: Coping Strategies Index household scores classified by food insecurity severity
 ```{r, echo = FALSE}
 
-# max score on CSI per household is 7 * (sum of all weights)
+# max score on rCSI per household is 7 * (sum of all weights)
 # to compare distributions across time ( or some other disagg) break the households into quantiles for each disagg
 ## First quantile is essentially "household did not use the equivalent of a non-serious CS (a 1) for a full week", max = 7
 ## Second quantile is "household used the equivalent of a non-serious CS (a 1 or 2) for at least a full week", max = 14
@@ -747,7 +751,7 @@ ggplot(scores_quant, aes(y = percentage/100, x = !!sym(vars$geo), fill = quantil
                              nrow = 1)) +
   labs(x = NULL, y = NULL,
        fill = "Percentage of households falling in each category",
-       subtitle = "CSI scores among surveyed households") +
+       subtitle = "rCSI scores among surveyed households") +
   theme(legend.position = "bottom",
         axis.text.y = element_text(face = "bold", hjust = 1, size = 12),
         axis.ticks.length = unit(0, "cm"),
@@ -790,7 +794,6 @@ In response to questions about their safety while participating in the program:
 ```{r, echo = FALSE}
 
 filtered <- select(ona_df, one_of(vars$id, vars$carm_aware_contact, vars$carm_would_report, vars$carm_ever_report)) %>%   
-  mutate_at(vars(one_of(vars$carm_aware_contact, vars$carm_would_report, vars$carm_ever_report)), funs(lookup_capitalize$value[match(., lookup_capitalize$factor)])) %>%
   melt(., id.vars = vars$id)
 
 ggplot(filtered, aes(x = rev(variable), fill = value)) +
@@ -819,7 +822,7 @@ ggplot(filter(ona_df, !is.na(!!sym(vars$carm_prefer_report))), aes(x = !!sym(var
   labs(x = "", 
        y = "# of respondents",
        title = "How would you prefer to report a complaint or feedback?") +
-  facet_grid(eval(expr(. ~ !!ensym(geo)))) +
+  facet_grid(eval(expr(. ~ !!sym(vars$geo)))) +
   format_chart(textang = 45) +
   theme(legend.position = "none")
 

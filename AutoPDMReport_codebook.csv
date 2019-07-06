@@ -68,3 +68,10 @@ carm_prefer_report,1,Hot line (Call)
 carm_prefer_report,2,Email
 carm_prefer_report,3,Suggestion Box
 carm_prefer_report,4,Through MC staff or\ncommunity committee member
+amount_spent_reasons,i_am_saving_it,I am saving it for future emergencies
+amount_spent_reasons,i_am_saving_it_1,I am saving it for food
+amount_spent_reasons,i_am_saving_it_2,I am saving it for cooking supplies
+amount_spent_reasons,i_am_saving_it_3,I am saving it for medical needs
+amount_spent_reasons,i_am_saving_it_4,I am saving it to pay back debt
+amount_spent_reasons,i_am_saving_it_5,I am saving it to purchase clothing for myself/my family
+amount_spent_reasons,i_am_saving_it_6,I am saving it for other reasons

@@ -29,21 +29,21 @@ knitr::opts_chunk$set(dpi = 300, fig.width=6)
 # Checks if necessary packages are installed on the system, if not installs them
 # Need to be online for this to work, and may take some time the first time your run. Only required to install once
 # and will run much faster the second time
-list.of.packages <- c("rmarkdown", "httr", "jsonlite", "stringr", "knitr", "dplyr", "lubridate", "ggplot2", "ggthemes", "pander", "reshape", "summarytools", "here")
+list.of.packages <- c("tidyverse", "rmarkdown", "knitr", "ggthemes", "pander", "reshape", "summarytools", "here")
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages)
 
 # Loads the required packages
-library(rmarkdown) #to generate the report
-library(httr)     # for accessing the REST api
-library(jsonlite) # for parson the JSON
-library(stringr)  # not necessary but useful to format the column names automatically
-library(knitr)     # for making the final word document
-library(dplyr)     # for data manipulation
-library(lubridate) # for date formatting
-library(ggplot2)   # for graphics
-library(pander)    # for markdown formatting
-library(ggthemes)  # for graphics
+library(tidyr)     # extra functions
+library(httr)      # accessing the REST API
+library(jsonlite)  # parsing the JSON from the API
+library(stringr)   # format column names, label names, otherwise work with strings
+library(dplyr)     # data manipulation
+library(ggplot2)   # graphing
+library(rmarkdown) # to generate the report
+library(knitr)     # making the final word document
+library(pander)    # markdown formatting
+library(ggthemes)  # extra themes for the graphics
 library(reshape)   # for changing dfs from wide to long
 library(summarytools) # on some machines this may require installing an Xquartz library locally
 library(here)      # for file path referencing
@@ -65,19 +65,17 @@ st_options('footnote', NA)
 # You shouldn't need to make any changes here. If you encounter errors with importing contact hcamp@mercycorps.org
 
 # GET the information from Ona, using the form_id, username and password params
-  #ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", params$form_id), 
-                         ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", "406847"), 
-                        authenticate("hannalcamp", "ww123ona"))
+  ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", params$form_id), 
+                        authenticate(params$username, params$password))
 
 # Makes the dataframe with submissions from Ona
-  ona_df <-
-    content(ona_raw_request,"text") %>%  # this gets the actual context from the HTTP request
-    fromJSON()                           # This converts the JSON to an R dataframe
+  ona_df <- content(ona_raw_request,"text") %>%    # this gets the actual context from the HTTP request
+              fromJSON()                           # This converts the JSON to an R dataframe
 
 # putting dates into a useable format
   # ona_df$ymdDate <- ymd(ona_df$today)
 
-# saving df copy for reference
+# saving df copy for reference if needed
   # save(ona_df, file = "ona_df.RData")
 
 # loading saved Ona df, if needed
@@ -113,10 +111,11 @@ makeSADD <- function(sex, age) {
 }
 
 # formatting charts function
-format_chart <- function(textang = 0, legend_name = "Legend") {
+format_chart <- function(textang = 0, legend_name = "Legend", legend_pos = "top") {
   list(
     theme_bw(),
-    theme(axis.text.x = element_text(face = "bold", angle = textang, hjust = 1)),
+    theme(axis.text.x = element_text(face = "bold", angle = textang, hjust = 1),
+          legend.position = legend_pos),
     scale_fill_pander(name = legend_name)
   )
 }
@@ -128,11 +127,9 @@ format_chart <- function(textang = 0, legend_name = "Legend") {
 ## if distributions need to be labeled programmatically, code should be added here
 # may need to embed in a shiny app
 
-#trim whitespace from before and after a column's values
-## preserve column names in a vector until I can figure out why the / are replaced with .
-names <- names(ona_df)
-ona_df <- as.data.frame(lapply(ona_df, trimws))
-names(ona_df) <- names
+# trim whitespace from before and after a column's values if it is a character column
+ona_df <- ona_df %>% 
+              mutate_if(is.character, trimws)
 
 # load data dictionary to determine which Ona variable names match to the necessary objects
 data_dict <- read.csv("AutoPDMReport_datadictionary.csv", stringsAsFactors = FALSE)
@@ -163,13 +160,16 @@ lookup_yn <- data.frame(factor = c("yes", "no"),
 # calculate CSI scores for later charting
 
 ## Create lookup table to decode variable names into strings and assign weights
+
+csi_weights <- c(1, 2, 1, 3, 1)
+
   lookup_csi <- data.frame(factor = c(vars$copinga_food_lesspref, vars$copinga_food_help, vars$copinga_food_fewmeals, vars$copinga_food_lessadult, vars$copinga_food_mealsize), 
                            strategies = c("Relied on less preferred, less expensive food", 
                                           "Borrowed food or relied on help from friends or relatives", 
                                           "Reduced the number of meals eaten per day", 
                                           "Restrict consumption by adults in order for young children to eat", 
                                           "Reduced portion size of meals"), 
-                           weights = c(1, 2, 1, 3, 1))
+                           weights = csi_weights)
 
   ## calculate CSI scores and store
 scores <- select(ona_df, one_of(vars$id, vars$geo, vars$copinga_food_lesspref, vars$copinga_food_help, vars$copinga_food_fewmeals, vars$copinga_food_lessadult, vars$copinga_food_mealsize)) %>%  
@@ -213,10 +213,10 @@ Acronyms <- c("UCT",
               "SADD")
 
 Definitions <- c("Unconditional Cash Transfer",
-                  "Internally Displaced Person", 
-                  "Monitoring, Evaluation, and Learning", 
-                  "Multi Purpose Cash Assistance",
-                 "Sex and Age Disaggregated")
+                 "Internally Displaced Person", 
+                 "Monitoring, Evaluation, and Learning", 
+                 "Multi Purpose Cash Assistance",
+                 "Sex and Age Disaggregated Data")
 
 data.frame(Acronyms, Definitions) %>% kable()
 
@@ -234,13 +234,13 @@ data.frame(Acronyms, Definitions) %>% kable()
 
 ## Tool and Sample Size
 
-##### Example text follows, replace with your own details:
+##### Give details on the questionnaire, the respondent selection, sampling methodology, sample size, and margin of error.
 
-##### Data was collected using a standardized quantitative PDM questionnaire developed by Mercy Corps and modified to meet the neeeds of the XX program. The questionnaire, included as appendix 1, includes information about the distribution process, household profiles, expenditures, coping strategies, and main priorities. The selection of respondents for the PDM interviews was based on a simple random sample of the participants in each distribution. The sample size was calculated based on a XX% confidence level and X% margin of error. The targeted sample was X and the total number of respondents was `r nrow(ona_df)`.
+The total number of respondents was `r nrow(ona_df)`.
 
 ## Data Collection and Analysis  
 
-Data was collected and stored using the Ona software. Data was cleaned and analyzed using the R open-source statistical language, and a template for each report was written in RMarkdown. The template R script is stored and documented on [Github](github.com/xxxx).
+Data was collected and stored using the Ona digital data collection software. Data was cleaned and analyzed using the R open-source statistical language, and a template report was written in RMarkdown. The template R script is stored and documented on [Github](github.com/xxxx).
 
 Individual reports include the output of the template RMarkdown file (in which graphics are updated using the most recent data), and contextual/written analysis provided by the program Monitoring & Evaluation staff.
 
@@ -250,21 +250,17 @@ Individual reports include the output of the template RMarkdown file (in which g
 
 ***
 
-# Findings
+# PDM Findings
 
-## Findings on process (most recent distribution)
+## Findings on the distribution process
 
-This section discusses findings about the quality of the most recent distribution process, including the process for beneficiary selection, respondents' understanding of the distribution process, and their experiences during the distribution and in transit.
+This section discusses findings about the quality of the distribution process, including the process for beneficiary selection, respondents' understanding of the distribution process, their experiences during the distribution, and their experiences in transit.
 
-### Beneficiary selection
+### Respondent knowledge of the distribution
 
 Of the respondents, `r round(sum(ona_df[[vars$why_selected]] == "yes")/nrow(ona_df), digits = 2)*100`% understood why their household was selected, and `r round(sum(ona_df[[vars$fair_selected]] == "yes")/nrow(ona_df), digits = 2)*100`% felt the selection process was fair.
 
-##### Insert qualitative analysis about the explanations given here.
-
-\newline
-
-### Respondent understanding of cash distribution
+##### If significant numbers of beneficiaries thought the selection process was unfair, insert qualitative analysis about the explanations given here.
 
 \newline
 
@@ -282,21 +278,24 @@ filtered <- select(ona_df, one_of(vars$geo, vars$informed_amount_yn, vars$inform
   as.data.frame(.) %>%  
   melt(., id.vars = vars$geo)
 
+# create label vector
+labels <- c("Were you informed how much you will receive?", "Were you informed how many times you will receive the cash?", "Do you feel that you received the amount of cash that you were entitled to?")
+
 ggplot(filtered, aes(x = variable, y = value, fill = !!sym(vars$geo))) +
   geom_col(position = "dodge") +
   labs(x = "", 
        y = "% of respondents",
        title = "Percentage of households answering 'Yes'") +
-    scale_x_discrete(labels = c("Were you informed how \nmuch you will receive?", "Were you informed \nhow many times you \nwill receive the cash?", "Do you feel that you\nreceived the amount of\ncash that you were\nentitled to?")) + 
+    scale_x_discrete(labels = str_wrap(labels, width = 20)) + 
   coord_flip() +
   format_chart(legend_name = "District") +
-  geom_text(aes(label = paste0(as.character(round(value, digits = 1)), "%")), position = position_dodge(width=0.9), hjust = 1, size = 2.5)
+  geom_text(aes(label = paste0(as.character(round(value, digits = 1)), "%")), position = position_dodge(width=0.9), size = 2.5)
 
 ```
 
 \newline
 
-Of the respondents, `r round(sum(ona_df[[vars$informed_amount_yn]] == "yes")/nrow(ona_df), digits = 2)*100`% were informed of how much money they would receive, and `r round(sum(ona_df[[vars$informed_nodist_yn]] == "yes")/nrow(ona_df), digits = 2)*100`% were informed of how many times they would receive it. On average, respondents believed they would receive `r mean(ona_df[[vars$informed_amount]], na.rm = T)` YER in cash in `r mean(ona_df[[vars$informed_nodist]], na.rm = T)` distributions.
+Of the respondents, `r round(sum(ona_df[[vars$informed_amount_yn]] == "yes")/nrow(ona_df), digits = 3)*100`% were informed of how much money they would receive, and `r round(sum(ona_df[[vars$informed_nodist_yn]] == "yes")/nrow(ona_df), digits = 3)*100`% were informed of how many times they would receive it. Of those respondents who were informed, on average they believed they would receive `r mean(ona_df[[vars$informed_amount]], na.rm = T)`YER in cash in `r mean(ona_df[[vars$informed_nodist]], na.rm = T)` distributions.
 
 ##### Insert qualitative analysis about the explanations given here.
 
@@ -336,8 +335,7 @@ ggplot(ona_df, aes(x = !!sym(vars$time_tosite), fill = !!sym(vars$time_tosite)))
        y = "# of respondents",
        title = "How long did it take to reach the cash distribution site?") +
   facet_grid(eval(expr(. ~ !!sym(vars$geo)))) +
-  format_chart(textang = 45) +
-  theme(legend.position = "none")
+  format_chart(textang = 45, legend_pos = "none")
   
 ```
 
@@ -356,8 +354,7 @@ ggplot(ona_df, aes(x = !!sym(vars$time_atsite), fill = !!sym(vars$time_atsite)))
        y = "# of respondents",
        title = "How long did you have to wait at the distribution site to get cash?") +
   facet_grid(eval(expr(. ~ !!sym(vars$geo)))) +
-  format_chart(textang = 45) +
-  theme(legend.position = "none")
+  format_chart(textang = 45, legend_pos = "none")
   
 ```
 
@@ -395,9 +392,6 @@ Additional findings on the logistical elements of the distribution:
 
 ```{r, echo = FALSE}
 
-# replace data <NA> with real NA
-ona_df[[vars$problems]] <- gsub("<NA>", NA, ona_df[[vars$problems]])
-
 # create table that excludes unused options and geographies
 table <- table(as.data.frame(as.matrix(select(ona_df, one_of(vars$problems, vars$geo)))), useNA = "no")
 
@@ -410,8 +404,6 @@ pandoc.table(table)
 
 #### Figure 5: Costs to reach the distribution site
 ```{r, echo=F, message=F, warning=F}
-
-ona_df[[vars$costs_tosite]] <- as.numeric(as.character(ona_df[[vars$costs_tosite]]))
 
 ggplot(select(ona_df, one_of(vars$id, vars$geo, vars$costs_tosite)), aes(x = !!sym(vars$geo), y = !!sym(vars$costs_tosite))) +
   geom_jitter(aes(fill = !!sym(vars$geo)), 
@@ -449,7 +441,7 @@ if(exists("distribution") == TRUE) {
          y = "% of respondents") +
     format_chart()
 } else {
-  print("Data for multiple distributions not found.")
+  print("Data for multiple distributions not found. If there is data for multiple distributions, check if your distribution variable is properly assigned in the data dictionary.")
 }
   
 ```
@@ -460,35 +452,11 @@ if(exists("distribution") == TRUE) {
 
 \newline
 
-#### Figure 7: Percentage of respondents who received a receipt
-```{r, echo = FALSE}
-
-if(exists("distribution") == TRUE) {
-  filtered <- select(ona_df, one_of(vars$distribution, vars$receipt_received, vars$household_status)) %>% 
-    mutate_at(vars(vars$receipt_received), funs(lookup_yn$value[match(., lookup_yn$factor)])) %>%  
-    group_by(!!sym(vars$distribution), !!sym(vars$geo)) %>% 
-    summarise(receipt = sum(!!sym(vars$receipt_received))/n()*100)
-
-  ggplot(filtered, aes(x = !!sym(vars$distribution), y = !!sym(vars$receipt), group = !!sym(vars$geo))) +
-    geom_line(aes(color = !!sym(vars$geo))) +
-    geom_point(aes(color = !!sym(vars$geo))) +
-    labs(x = "", 
-         y = "% of respondents") +
-    format_chart()
-  
-} else {
-  print("Data for multiple distributions not found.")
-}
-  
-```
-
-\newline 
-
 ***
 
 \newline
 
-#### Figure 8: Costs to reach the distribution site
+#### Figure 7: Costs to reach the distribution site
 ```{r, echo=F, message=F, warning=F}
 
 if(exists("distribution") == TRUE) {
@@ -518,13 +486,15 @@ ggplot(select(ona_df, one_of(vars$id, vars$distribution, vars$costs_tosite)), ae
 
 ***
 
+\newline
+
 ## Profile of Respondents and Cash Use
 
 This section discusses findings on the characteristics of survey respondents, and how they utilized the cash received.
 
-### Respondent Profile (most recent PDM survey)
+### Respondent Profile
 
-#### Table 3: Household Status of respondents, sex and age disaggregated
+#### Table 3: Household Status of respondents (SADD)
 
 ```{r table4, echo = FALSE}
 
@@ -539,21 +509,31 @@ pandoc.table(table)
 
 ***
 
-#### Figure 9: Respondent population profile
+#### Figure 8: Respondent population profile
 ```{r, echo = FALSE}
 
-filtered <- select(ona_df, one_of(vars$id, vars$hoh, vars$worked_pastmonth, vars$malnutrition, vars$breadwinner_lost, vars$breadwinner_nowork)) %>%   
-  melt(., id.vars = vars$id)
+filtered <- select(ona_df, one_of(vars$geo, vars$hoh, vars$worked_pastmonth, vars$malnutrition, vars$breadwinner_lost, vars$breadwinner_nowork)) %>% 
+  mutate_at(vars(one_of(vars$hoh, vars$worked_pastmonth, vars$malnutrition, vars$breadwinner_lost, vars$breadwinner_nowork)), funs(lookup_yn$value[match(., lookup_yn$factor)])) %>% 
+  group_by(!!sym(vars$geo)) %>% 
+  summarise(breadwinner_nowork = sum(!!sym(vars$breadwinner_nowork))/n()*100,
+            breadwinner_lost = sum(!!sym(vars$breadwinner_lost))/n()*100,
+            malnutrition = sum(!!sym(vars$malnutrition))/n()*100,
+            worked_pastmonth = sum(!!sym(vars$worked_pastmonth))/n()*100, 
+            hoh = sum(!!sym(vars$hoh))/n()*100) %>% 
+  as.data.frame(.) %>%  
+  melt(., id.vars = vars$geo)
 
-ggplot(filtered, aes(x = rev(variable), fill = value)) +
-  geom_bar() +
+labels <- c("Is the primary breadwinner no longer able to work?", "Has HH lost the primary breadwinner?", "Anyone in family treated for SAM?", "Has anyone in HH worked in past month?", "Are you the head of household?")
+
+ggplot(filtered, aes(x = variable, y = value, fill = !!sym(vars$geo))) +
+  geom_col(position = "dodge") +
   labs(x = "", 
-       y = "# of respondents") +
-  scale_x_discrete(labels = c("Is the primary \nbreadwinner no \nlonger able to work?", "Has HH lost the \nprimary breadwinner?", "Anyone in family \ntreated for SAM?", "Has anyone in HH \nworked in past month?", "Are you the head \nof household?")) + 
+       y = "% of respondents",
+       title = "Percentage of households answering 'Yes'") +
+    scale_x_discrete(labels = str_wrap(labels, width = 20)) + 
   coord_flip() +
-  theme_bw() +
-  theme(axis.text.x = element_text(face = "bold", hjust = 1)) +
-  scale_fill_pander(name = "Response")
+  format_chart(legend_name = "District") +
+  geom_text(aes(label = paste0(as.character(round(value, digits = 1)), "%")), position = position_dodge(width=0.9), size = 2.5)
   
 ```
 
@@ -562,7 +542,7 @@ ggplot(filtered, aes(x = rev(variable), fill = value)) +
 General findings about usage of the distributed cash:
 
 * `r round(sum(ona_df[[vars$cash_shared]] == "yes")/nrow(ona_df), digits = 2)*100`% of respondents shared items bought using the cash assistance with other people living in the household.
-* `r round(sum(ona_df[[vars$amount_spent]] == "100%")/nrow(ona_df), digits = 2)*100`% of respondents reported that they had spent all of the cash assistance, while `r round(sum(ona_df[[vars$amount_spent]] == "0%")/nrow(ona_df), digits = 2)*100`% reported that they had not spent any of it. The most frequent reason given for not spending all of the cash was "`r sort(table(ona_df[[vars$amount_spent_reasons]]), decreasing = TRUE)[1]`".
+* `r round(sum(ona_df[[vars$amount_spent]] == "100%")/nrow(ona_df), digits = 2)*100`% of respondents reported that they had spent all of the cash assistance, while `r round(sum(ona_df[[vars$amount_spent]] == "0%")/nrow(ona_df), digits = 2)*100`% reported that they had not spent any of it. The most frequent reason given for not spending all of the cash was "`r names(sort(table(ona_df[[vars$amount_spent_reasons]]), decreasing = TRUE)[1])`", and the second most frequent reason was "`r names(sort(table(ona_df[[vars$amount_spent_reasons]]), decreasing = TRUE)[2])`".
 * `r round(sum(ona_df[[vars$amount_sufficient]] == "yes")/nrow(ona_df), digits = 2)*100`% of respondents reported that the amount was sufficient to cover their basic needs for one month.
 * `r round(sum(ona_df[[vars$access_goods]] == "yes")/nrow(ona_df), digits = 2)*100`% of respondents reported that they were able to access the goods/services they wanted to buy with the cash assistance.
 
@@ -572,9 +552,6 @@ General findings about usage of the distributed cash:
 
 ```{r table5, echo = FALSE}
 
-# replace data <NA> with real NA
-ona_df[[vars$challenges]] <- gsub("<NA>", NA, ona_df[[vars$challenges]])
-
 pandoc.table(table(select(ona_df, one_of(vars$challenges, vars$geo))))
 
 ```
@@ -583,13 +560,12 @@ pandoc.table(table(select(ona_df, one_of(vars$challenges, vars$geo))))
 
 \newline
 
-#### Figure 10: Needs covered by cash assistance
+#### Figure 9: Needs covered by cash assistance
 ```{r, echo = FALSE}
 
-# replace data <NA> with real NA
-ona_df[[vars$proportion_needs_covered]] <- gsub("<NA>", NA, ona_df[[vars$proportion_needs_covered]])
-
-ggplot(ona_df, aes(x = !!sym(vars$proportion_needs_covered), fill = !!sym(vars$proportion_needs_covered))) +
+ona_df %>% 
+  drop_na(!!sym(vars$proportion_needs_covered)) %>% 
+  ggplot(aes(x = !!sym(vars$proportion_needs_covered), fill = !!sym(vars$proportion_needs_covered))) +
   geom_bar() +
   labs(x = "\nProportion covered", 
        y = "# of respondents",
@@ -597,8 +573,7 @@ ggplot(ona_df, aes(x = !!sym(vars$proportion_needs_covered), fill = !!sym(vars$p
   #scale_fill_discrete(name = "Sex of Respondent", labels = c("Female", "Male")) + 
   #scale_x_discrete(labels = c("Yes", "No")) + 
   facet_grid(eval(expr(. ~ !!sym(vars$geo)))) +
-  format_chart(textang = 45) + 
-  theme(legend.position = "none")
+  format_chart(textang = 45, legend_pos = "none")
 
 ```
 
@@ -610,7 +585,7 @@ ggplot(ona_df, aes(x = !!sym(vars$proportion_needs_covered), fill = !!sym(vars$p
 
 ### Use of cash assistance
 
-#### Figure 11: Uses of cash assistance
+#### Figure 10: Uses of cash assistance
 ```{r, echo=F, message=F, warning=F}
 
 # select expenditure variables, convert to numeric, and calculate colSums to find the top 8 uses of the cash
@@ -636,7 +611,7 @@ ggplot(filtered, aes(x = variable, y = value)) +
   xlab("") +
   ylab("YER") +
   labs(subtitle = "Of the cash assistance you have spent, how much did you spend on each of the \nfollowing categories in the last two weeks? (Top 8 Expenses)") +
-  scale_x_discrete(labels = strtrim(names_plot, width = 25)) +
+  scale_x_discrete(labels = str_wrap(names_plot, width = 20)) +
   format_chart(textang = 45) +
   scale_color_pander() +
   theme(legend.position = "none")
@@ -645,7 +620,7 @@ ggplot(filtered, aes(x = variable, y = value)) +
 
 ***
 
-### Coping Strategies Index (all distributions)
+### Coping Strategies Index
 
 As noted in the World Food Programme's [Coping Strategies Index Manual](https://documents.wfp.org/stellent/groups/public/documents/manual_guide_proced/wfp211058.pdf), the logic of the Coping Strategies Index (CSI) is to help analysts understand the target population's answer(s) to the following question: "What do you do when you don’t have enough food, and don’t have enough money to buy food?" From the manual: "The basic idea is to measure the frequency of these coping behaviors (how often is the coping strategy used?) and the severity of the strategies (what degree of food insecurity do they suggest?). Information on the frequency and severity is then combined in a single score, the Coping Strategies Index, which is an indicator of the household’s food security status."
 
@@ -660,11 +635,8 @@ Strategies <- c("Relied on less preferred, less expensive food",
                  "Reduced the number of meals eaten per day",
                  "Restrict consumption by adults in order for young children to eat",
                  "Reduced portion size of meals")
-Weights <- c(1, 
-             2,
-             1,
-             3,
-             1)
+
+Weights <- csi_weights
 
 data.frame(Strategies, Weights) %>% kable()
 
@@ -673,13 +645,11 @@ data.frame(Strategies, Weights) %>% kable()
 
 ##### Insert qualitative analysis about the coping strategies used by the community prior to the distribution here.
 
-Calculation of the rCSI score for each household was done according to the following equation:
+Calculation of the rCSI score for each household was done by multiplying the # of days the household utilized each coping strategy by the weighting value of the coping strategy, then summing the values for all strategies.
 
-$$HH rCSI = \Sigma (# of days HH utilized CS * weight value of CS)$$
+The maximum value of the rCSI per household is `r 7 * sum(csi_weights)`.
 
-The maximum value of the rCSI per household is `r 7*sum(1, 2, 1, 3, 1)`.
-
-#### Figure 12: Coping Strategies Index scores disaggregated by location
+#### Figure 11: Coping Strategies Index scores disaggregated by location
 ```{r, echo=F, message=F, warning=F}
 
 ggplot(scores, aes(x = !!sym(vars$geo), y = household_csi)) +
@@ -688,7 +658,7 @@ ggplot(scores, aes(x = !!sym(vars$geo), y = household_csi)) +
   geom_boxplot(aes(fill = !!sym(vars$geo)), colour = "black", width = 0.5,
                show.legend = FALSE, outlier.shape = NA, alpha = 0.4) +
   xlab("") +
-  ylab(paste0("rCSI Score (max = ", as.character(7*sum(1, 2, 1, 3, 1)), ")")) +
+  ylab(paste0("rCSI Score (max = ", as.character(7 * sum(csi_weights)), ")")) +
   theme_bw() +
   theme(axis.text.x = element_text(face = "bold", angle = 45, hjust = 1)) +
   scale_fill_pander(guide = FALSE) +
@@ -699,7 +669,7 @@ ggplot(scores, aes(x = !!sym(vars$geo), y = household_csi)) +
 ##### Insert any narrative about the differences in scores among the disaggregated households here.
 
 
-#### Figure 13: Coping Strategies Index household scores classified by food insecurity severity
+#### Figure 12: Coping Strategies Index household scores classified by food insecurity severity
 ```{r, echo = FALSE}
 
 # max score on rCSI per household is 7 * (sum of all weights)
@@ -710,7 +680,7 @@ ggplot(scores, aes(x = !!sym(vars$geo), y = household_csi)) +
 ## Fourth quantile is "household used the equivalent of more than one serious CS (a 3 or 4) for at least a full week", max = 7 * weights vector
 
 ApplyQuantiles <- function(x) {
-  cut(x, breaks= c(0, 7, 14, 21, 7*sum(1, 2, 1, 3, 1)), 
+  cut(x, breaks= c(0, 7, 14, 21, 7 * sum(csi_weights)), 
       labels=c("Least food insecure\n(1st quartile)", "Less food insecure\n(2nd quartile)", "More food insecure\n(3rd quartile)", "Most food insecure\n(4th quartile)"), include.lowest=TRUE)
 }
 
@@ -723,19 +693,6 @@ scores_quant <- scores_quant %>%  group_by(quantile, !!sym(vars$geo)) %>%
   summarise(n_quant = n()) %>% 
   merge(., n_dist, by = vars$geo) %>%  
   mutate(percentage = n_quant/n_dist*100)
-
-# ggplot(scores, aes(x = distribution, y = percentage, fill = quantile)) +
-#   geom_col() +
-#   labs(x = "", 
-#        y = "% of respondents",
-#        title = "Figure X: Post-assistance Coping Strategies Index Scores (all distributions)",
-#        subtitle = "Insert here") +
-#   #scale_x_discrete(labels = c()) + 
-#   coord_flip() +
-#   theme_tufte() +
-#   #theme(axis.text.x = element_text(face = "bold", hjust = 1)) +
-#   scale_fill_brewer(palette = "RdYlGn") +
-#   theme(legend.position = "bottom")
 
 scores_quant$quantile <- factor(scores_quant$quantile, levels = rev(c("Least food insecure\n(1st quartile)", "Less food insecure\n(2nd quartile)", "More food insecure\n(3rd quartile)", "Most food insecure\n(4th quartile)")))
 #scores_quant$distribution <- factor(scores$distribution, levels = c("Distribution 3", "Distribution 2", "Distribution 1"))
@@ -751,7 +708,7 @@ ggplot(scores_quant, aes(y = percentage/100, x = !!sym(vars$geo), fill = quantil
                              nrow = 1)) +
   labs(x = NULL, y = NULL,
        fill = "Percentage of households falling in each category",
-       subtitle = "rCSI scores among surveyed households") +
+       subtitle = "Food insecurity severity by district") +
   theme(legend.position = "bottom",
         axis.text.y = element_text(face = "bold", hjust = 1, size = 12),
         axis.ticks.length = unit(0, "cm"),
@@ -765,15 +722,22 @@ ggplot(scores_quant, aes(y = percentage/100, x = !!sym(vars$geo), fill = quantil
 
 ### Respondent preferences for future distributions
 
-If the program were to be redone, `r round(sum(ona_df[[vars$preferred_modality]] == "vouchers")/nrow(ona_df), digits = 2)*100`% of respondents would prefer to receive assistance in the form of vouchers, while `r round(sum(ona_df[[vars$preferred_modality]] == "the_equivalent")/nrow(ona_df), digits = 2)*100`% would prefer to receive the equivalent value in goods and services. `r round(sum(ona_df[[vars$preferred_modality]] == "cash")/nrow(ona_df), digits = 2)*100`% of respondents preferred to receive the cash.
+If the program were to be redone, `r round(sum(ona_df[[vars$preferred_modality]] == "vouchers")/nrow(ona_df), digits = 3)*100`% of the respondents would prefer to receive assistance in the form of vouchers, while `r round(sum(ona_df[[vars$preferred_modality]] == "the_equivalent")/nrow(ona_df), digits = 3)*100`% would prefer to receive the equivalent value in goods and services. `r round(sum(ona_df[[vars$preferred_modality]] == "cash")/nrow(ona_df), digits = 3)*100`% of respondents preferred to receive the cash.
+
+Of the `r nrow(ona_df)` respondents, `r sum(!is.na(ona_df[[vars$reason_modality_preferred]]))` gave a reason why they preferred the modality.
 
 \newline
 
 #### Table 4: Reasons respondents preferred different assistance modalities (# of persons)
-
 ```{r, echo = FALSE}
 
-pandoc.table(table(select(ona_df, one_of(vars$reason_modality_preferred, vars$preferred_modality))))
+select(ona_df, one_of(vars$reason_modality_preferred, vars$preferred_modality)) %>% 
+  drop_na(!!sym(vars$reason_modality_preferred)) %>% 
+  group_by(!!sym(vars$reason_modality_preferred), !!sym(vars$preferred_modality)) %>% 
+  summarise(n = n()) %>% 
+  spread(!!sym(vars$preferred_modality), n) %>% 
+  .[order(.[[2]], decreasing = T),] %>% 
+  pandoc.table()
 
 ```
 
@@ -783,39 +747,47 @@ pandoc.table(table(select(ona_df, one_of(vars$reason_modality_preferred, vars$pr
 
 In response to questions about their safety while participating in the program:
 
-* `r round(sum(ona_df[[vars$feel_less_safe]] == "Yes")/nrow(ona_df), digits = 2)*100`% of respondents said they felt less safe or more at risk by receiving the assistance.
-* `r round(sum(ona_df[[vars$community_tension]] == "yes")/nrow(ona_df), digits = 2)*100`% of respondents said their participation in the program caused tensions between them and the community.
-* `r round(sum(ona_df[[vars$household_tension]] == "yes")/nrow(ona_df), digits = 2)*100`% of respondents said their participation in the program caused tensions between them and the household.
-* `r round(sum(ona_df[[vars$program_exchange]] == "yes")/nrow(ona_df), digits = 2)*100`% of respondents said that in order to be included in the program, they had to pay a fee, make a favor in a return, get involved in suspicious work, or work for someone in some other way.
+* `r round(sum(ona_df[[vars$feel_less_safe]] != "No")/nrow(ona_df), digits = 3)*100`% of respondents said they felt less safe or more at risk by receiving the assistance.
+* `r round(sum(ona_df[[vars$community_tension]] == "yes")/nrow(ona_df), digits = 3)*100`% of respondents said their participation in the program caused tensions between them and the community.
+* `r round(sum(ona_df[[vars$household_tension]] == "yes")/nrow(ona_df), digits = 3)*100`% of respondents said their participation in the program caused tensions between them and the household.
+* `r round(sum(ona_df[[vars$program_exchange]] == "yes")/nrow(ona_df), digits = 3)*100`% of respondents said that in order to be included in the program, they had to pay a fee, make a favor in a return, get involved in suspicious work, or work for someone in some other way.
 
 ##### Insert any qualitative analysis about the respondents' assessment of their safety here.
 
-#### Figure 14: Profile of respondent understanding of and participation in CARM procedures
+#### Figure 13: Profile of respondent understanding of and participation in CARM procedures
 ```{r, echo = FALSE}
 
-filtered <- select(ona_df, one_of(vars$id, vars$carm_aware_contact, vars$carm_would_report, vars$carm_ever_report)) %>%   
-  melt(., id.vars = vars$id)
+filtered <- select(ona_df, one_of(vars$geo, vars$carm_aware_contact, vars$carm_would_report, vars$carm_ever_report)) %>% 
+  mutate_at(vars(one_of(vars$carm_aware_contact, vars$carm_would_report, vars$carm_ever_report)), funs(lookup_yn$value[match(., lookup_yn$factor)])) %>% 
+  group_by(!!sym(vars$geo)) %>% 
+  summarise(carm_ever_report = sum(!!sym(vars$carm_ever_report))/n()*100,
+            carm_would_report = sum(!!sym(vars$carm_would_report))/n()*100,
+            carm_aware_contact = sum(!!sym(vars$carm_aware_contact))/n()*100) %>% 
+  as.data.frame(.) %>%  
+  melt(., id.vars = vars$geo)
 
-ggplot(filtered, aes(x = rev(variable), fill = value)) +
-  geom_bar() +
+labels <- c("Have you ever used one of our feedback mechanisms?",  "If you had a complaint or suggestion, would you report it?", "Are you aware of how to contact us?")
+
+ggplot(filtered, aes(x = variable, y = value, fill = !!sym(vars$geo))) +
+  geom_col(position = "dodge") +
   labs(x = "", 
-       y = "# of respondents") +
-  scale_x_discrete(labels = c("Have you ever used\none of our feedback\nmechanisms?",  "If you had a complaint\nor suggestion, would\nyou report it?", "Are you aware of \n how to contact us?")) + 
+       y = "% of respondents",
+       title = "Percentage of households answering 'Yes'") +
+    scale_x_discrete(labels = str_wrap(labels, width = 20)) + 
   coord_flip() +
-  format_chart(legend_name = "Response")
+  format_chart(legend_name = "District:") +
+  geom_text(aes(label = paste0(as.character(round(value, digits = 1)), "%")), position = position_dodge(width=0.9), size = 2.5)
   
 ```
 
 \newline
 
-Of all respondents, `r sum(ona_df[[vars$carm_ever_report]] == "yes")` said they had ever used one of Mercy Corps' feedback mechanisms. Of those, `r round(sum(ona_df[[vars$carm_received_response]] == "yes")/sum(ona_df[[vars$carm_ever_report]] == "yes"), digits = 2)*100`% said they received a response, and `r round(sum(ona_df[[vars$carm_satisfied_response]] == "yes")/sum(ona_df[[vars$carm_ever_report]] == "yes"), digits = 2)*100`% said they were satisfied with the response.
+Of all respondents, `r sum(ona_df[[vars$carm_ever_report]] == "yes")` said they had ever used one of Mercy Corps' feedback mechanisms. Of those, `r round(sum(ona_df[[vars$carm_received_response]] == "yes", na.rm = T)/sum(ona_df[[vars$carm_ever_report]] == "yes", na.rm = T), digits = 2)*100`% said they received a response, and `r round(sum(ona_df[[vars$carm_satisfied_response]] == "yes", na.rm = T)/sum(ona_df[[vars$carm_ever_report]] == "yes", na.rm = T), digits = 2)*100`% said they were satisfied with the response.
 
 \newline
 
-#### Figure 15: Preferred methods for CARM reporting
+#### Figure 14: Preferred methods for CARM reporting
 ```{r, echo = FALSE}
-
-ona_df[[vars$carm_prefer_report]] <- gsub("<NA>", NA, ona_df[[vars$carm_prefer_report]])
 
 ggplot(filter(ona_df, !is.na(!!sym(vars$carm_prefer_report))), aes(x = !!sym(vars$carm_prefer_report), fill = !!sym(vars$carm_prefer_report))) +
   geom_bar() +
@@ -823,6 +795,7 @@ ggplot(filter(ona_df, !is.na(!!sym(vars$carm_prefer_report))), aes(x = !!sym(var
        y = "# of respondents",
        title = "How would you prefer to report a complaint or feedback?") +
   facet_grid(eval(expr(. ~ !!sym(vars$geo)))) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 20)) + 
   format_chart(textang = 45) +
   theme(legend.position = "none")
 

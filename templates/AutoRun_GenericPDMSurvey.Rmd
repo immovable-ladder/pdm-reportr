@@ -1,0 +1,853 @@
+---
+title: "Post-Distribution Monitoring Report"
+author: "Program:"
+date: "Monthly Report: XXX 2020"
+output:
+  word_document:
+    toc: true
+    reference_docx: ./wordStylesReferenceMC.docx
+  pdf_document: default
+params:
+  form_id: NA
+  password: NA
+  username: NA
+  monthToRun: NA
+---
+
+```{r setup, include=FALSE}
+# This is the automated PDM Report template. This file should be run in R Studio to produce the PDM Report
+# This file works with the template form found HERE #todo and the wordStylesReferenceMC.docx
+
+# This is a code chunk, these boxes are where the calculations take place
+# Text in a code chunk with a # in front of it is a comment and is used to explain what is happening
+
+# This chunk, setup, loads the R packages that will be used
+# You shouldn't need to make any changes here unless you are an advanced user
+
+knitr::opts_chunk$set(echo = TRUE, results = 'asis')
+knitr::opts_chunk$set(dpi = 300, fig.width=7)
+
+# Checks if necessary packages are installed on the system, if not installs them
+# Need to be online for this to work, and may take some time the first time your run. Only required to install once
+# and will run much faster the second time
+list.of.packages <- c("tidyverse", "rmarkdown", "knitr", "ggthemes", "pander", "reshape", "summarytools", "here", "lubridate", "googledrive")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+# Loads the required packages
+library(tidyr)     # extra functions
+library(httr)      # accessing the REST API
+library(jsonlite)  # parsing the JSON from the API
+library(stringr)   # format column names, label names, otherwise work with strings
+library(dplyr)     # data manipulation
+library(ggplot2)   # graphing
+library(rmarkdown) # to generate the report
+library(knitr)     # making the final word document
+library(pander)    # markdown formatting
+library(ggthemes)  # extra themes for the graphics
+library(reshape)   # for changing dfs from wide to long
+library(summarytools) # on some machines this may require installing an Xquartz library locally
+library(lubridate) # for date formatting
+library(here)      # for file path referencing
+library(googledrive)    # fir retrieving files from GDrive
+
+# renv is used to track package dependencies and store a working snapshot that can always be used as a backup in case a package upgrade throws things off
+## renv::revert(commit = '')
+## renv::restore()
+
+# Sets global options for the document that control some appearance settings
+st_options('omit.headings', TRUE)
+st_options('bootstrap.css', FALSE)
+st_options('footnote', NA)
+#more param options here https://bookdown.org/yihui/rmarkdown/params-knit.html#knit-with-custom-parameters
+
+```
+
+```{r ona_pull, include=FALSE}
+# This is where the data from Ona gets pulled into R for processing, or static files are uploaded
+# You shouldn't need to make any changes here. If you encounter errors with importing contact hcamp@mercycorps.org
+
+# GET the information from Ona, using the form_id, username and password params
+# the data retrieved from this call is not saved when the report is run
+     ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", params$form_id),
+                           authenticate(params$username, params$password))
+
+# Makes the dataframe with submissions from Ona
+       ona_df <- content(ona_raw_request,"text") %>%    # this gets the actual content from the HTTP request
+                  fromJSON()                           # This converts the JSON to an R dataframe
+
+```
+
+```{r functions, include = FALSE}
+
+# Retrieve needed function files
+
+source("./functions/plotSingleVar.R")
+source("./functions/plotMultiVar.R")
+source("./functions/tableSingleVar.R")
+source("./functions/makeSADD.R")
+source("./functions/format_chart.R")
+source("./functions/generateYesNoDF.R")
+
+# create vector of colors for geographies - comment out colors not to be used
+  mcColors <- c(
+                "#c8102e", 
+                "#71757b",
+                "#33bfbb", 
+                "#ffdb33", 
+                "#9ac933", 
+                "#877fae"
+              )
+
+```
+
+```{r pre_process, include = FALSE, cache = FALSE}
+
+########################################################################
+# load data dictionary and codebook appropriate to Program  
+  ## authenticate yourself with google sheets - must be authenticated with account where they are stored
+  # drive_auth(
+  #   email = gargle::gargle_oauth_email(),
+  #   path = NULL,
+  #   scopes = "https://www.googleapis.com/auth/drive",
+  #   cache = gargle::gargle_oauth_cache(),
+  #   use_oob = gargle::gargle_oob_default(),
+  #   token = NULL
+  # )
+
+  ## download appropriate data dictionary Drive file by id and load as df
+  drive_download(drive_get(id = "DATA DICT SHEET ID", 
+                           team_drive = "TEAM DRIVE"),
+                      path = "data_dict.csv",
+                      overwrite = T)
+  
+  data_dict <- read.csv("./data_dict.csv", stringsAsFactors = F)
+  
+  ## download appropriate codebook Drive file by id and load as df
+  drive_download(drive_get(id = "CODEBOOK SHEET ID", 
+                           team_drive = ""),
+                      path = "codebook.csv",
+                      overwrite = T)
+  
+  codebook <- read.csv("./codebook.csv", stringsAsFactors = F)
+  
+
+# putting dates into a useable format
+  ona_df$ymdDate <- ymd(ona_df$`A/data`)
+  ona_df$month <- month(ona_df$`A/data`)
+  ona_df$monthName <- month.name[ona_df$month]
+  
+#########################################################################################
+## trim whitespace from before and after a column's values if it is a character column
+  ona_df <- ona_df %>% 
+    mutate_if(is.character, trimws)
+
+# create named list of var names and questions for referencing
+  vars <- as.list(data_dict[, 2])
+  names(vars) <- data_dict[, 1]
+  
+  questions <- as.list(data_dict[, 3])
+  names(questions) <- data_dict[, 1] 
+  
+# store codebook table variables for reference
+  ## REMOVE select all variables
+   codebook_vars <- unique(codebook$auto_var)
+   
+# filter the dataset to the time frame needed
+## putting dates into a useable format, find the month of each entry
+  ona_df$ymdDate <- ymd(ona_df[vars$date])
+  ona_df$month <- month(ona_df$ymdDate)
+  ona_df$monthName <- month.name[ona_df$month]
+
+## filter ona_df by monthsToRun param
+  ona_df <- filter(ona_df, month %in% params$monthToRun)
+  
+# store codebook table variables for reference
+  ## REMOVE select all variables
+   codebook_vars <- unique(codebook$auto_var)
+
+# uncode coded data
+# TODO replace funs with list
+# TODO a bulk Yes/No search and replace
+  for (i in seq_along(codebook_vars)) {
+   if(codebook_vars[i] %in% data_dict$auto_var == T) {  
+      codebook_snip <- filter(codebook, auto_var == codebook_vars[i]) %>% 
+        select(source_code, end_code)
+      ona_df <- mutate_at(ona_df,
+                          .vars = vars(vars[[codebook_vars[i]]]), 
+                          .funs = list(~ codebook_snip$end_code[match(., codebook_snip$source_code)]))
+    }
+  }
+   
+
+# create Y/N lookup tables in case the teams don't have that in the codebook
+#TODO functionize this better using codebook
+  lookup_yn <- data.frame(factor = c("yes", "no"),
+                          value = c(1, 0))
+  
+  lookup_yn2 <- data.frame(factor = c("Yes", "No"),
+                          value = c(1, 0))
+
+#store the geographic disaggregation variable as an object for later reference
+  geo <- vars$geo
+
+## calculate respondents per geo for later reference
+  respondents_pergeo <- select(ona_df, !!sym(geo)) %>% 
+    group_by(!!sym(geo)) %>% 
+    summarise(totalsubdist = n())
+  
+## CALCULATE INDICATOR TABLES for later reference
+  # indicator 1
+
+table_indicator1 <- select(ona_df, one_of(vars$geo, vars$hoh, vars$safe_atsite_yn, vars$comm_receivesafe_yn)) %>% 
+  mutate_at(vars(one_of(vars$safe_atsite_yn, vars$comm_receivesafe_yn)), 
+            funs(lookup_yn$value[match(., lookup_yn$factor)])) %>% 
+  mutate(y = ifelse(!!sym(vars$safe_atsite_yn) == 1 & !!sym(vars$comm_receivesafe_yn) == 1, 0,
+                    ifelse(!!sym(vars$safe_atsite_yn) == 0 & !!sym(vars$comm_receivesafe_yn) == 0, 2, 1))) %>%
+  group_by(!!sym(vars$geo), !!sym(vars$hoh)) %>% 
+  summarise(Total = n(),
+            Reporting = sum(y, na.rm = T),
+            `Percent Reporting` = round(Reporting/Total*100, digits = 2)) %>% 
+  ungroup() %>% 
+  select(one_of(vars$geo), HOH = !!sym(vars$hoh), Reporting, Total, `Percent Reporting`)
+
+  # indicator 2
+
+table_indicator2 <- select(ona_df, one_of(vars$geo, vars$hoh, vars$amount_entitled_yn)) %>% 
+  mutate_at(vars(one_of(vars$amount_entitled_yn)), funs(lookup_yn$value[match(., lookup_yn$factor)])) %>% 
+  group_by(!!sym(vars$geo), !!sym(vars$hoh)) %>% 
+  summarise(`"Yes" Respondents` = sum(!!sym(vars$amount_entitled_yn), na.rm = T),
+            Total = n(),
+            `Percent reporting` = round(`"Yes" Respondents`/Total*100, digits = 2))  %>% 
+  ungroup() %>% 
+  select(one_of(vars$geo), HOH = !!sym(vars$hoh), `"Yes" Respondents`, Total, `Percent reporting`)
+
+  # indicator 3
+
+table_indicator3 <- select(ona_df, one_of(vars$geo, vars$hoh, vars$comm_satisfied_yn)) %>% 
+  mutate_at(vars(one_of(vars$comm_satisfied_yn)), funs(lookup_yn$value[match(., lookup_yn$factor)])) %>% 
+  group_by(!!sym(vars$geo), !!sym(vars$hoh)) %>% 
+  summarise(Satisfied = sum(!!sym(vars$comm_satisfied_yn), na.rm = T),
+            Total = n(),
+            `Percent reporting` = round(Satisfied/Total*100, digits = 2))  %>% 
+  ungroup() %>% 
+  select(one_of(vars$geo), HOH = !!sym(vars$hoh), Satisfied, Total, `Percent reporting`)
+
+
+```
+
+
+# How to use this report
+
+##### This report is not a final PDM report. The charts and tables are already updated with your most recent data, however, the narrative and interpretation of the graphs should explain the reasons behind household behavior. This must be provided by someone with knowledge of the program. Temporary text that is highlighted in yellow and italicized (like this text) indicates where narrative should be provided. Use your judgment about what narrative needs to be provided, and be sure to delete all the temporary text after you're done!
+
+##### Text that is not highlighted is automatically generated, and the numbers within that non-highlighted text are automatically calculated based on your data. You may leave the non-highlighted text as is, delete it if you feel it is not useful, or add additional context to it.
+
+##### This section ("How to use this report") should be deleted prior to distribution of the final report.
+
+## Sample Size and Data Collection Period
+
+##### If the actual data collection period was different from the date span of form submissions to Ona, please correct the text provided below. The text following this sentence is automatically generated using the data in Ona.
+
+The data used in this report was collected between `r sort(ona_df$ymdDate)[1]` and `r sort(ona_df$ymdDate)[length(ona_df$ymdDate)]`. The total number of respondents in that period was `r nrow(ona_df)`.
+
+## Distribution Rounds
+
+```{r tabledist, echo = FALSE}
+
+table <- select(ona_df, one_of(vars$geo, vars$date), ymdDate) %>% 
+  group_by(!!sym(vars$geo)) %>%
+  summarise(Round = "",
+            `Data Collection Range` = paste(min(ymdDate), max(ymdDate), sep = " to "),
+            `Data Entry Range` = paste(min(!!sym(vars$date)), max(!!sym(vars$date)), sep = " to "),
+            n = n())
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+## Acronyms  
+
+```{r tableacronyms, echo = FALSE}
+# add acronym to the first vector, following the pattern
+# add definition to the second vector, it is important that they are in the same order
+
+Acronyms <- c("UCT",
+              "IDP",
+              "HOH",
+              "MEL", 
+              "MPCA",
+              "SADD")
+
+Definitions <- c("Unconditional Cash Transfer",
+                 "Internally Displaced Person", 
+                 "Head of Household",
+                 "Monitoring, Evaluation, and Learning", 
+                 "Multi Purpose Cash Assistance",
+                 "Sex and Age Disaggregated Data")
+
+data.frame(Acronyms, Definitions) %>% kable()
+
+```
+
+# Summary
+
+#### Figure 1: Respondent population profile (% who answered "yes" to the questions)
+```{r, echo = FALSE, fig.height = 7, fig.width=7, dpi = 600}
+
+# rev added to both the varsToChart vector because we're flipping the coordinates in the chart
+plotMultiVarSummary(varsToChart = rev(c(vars$fair_selected_yn,
+                                        vars$program_exchange, 
+                                        vars$problems_corrupt_yn, 
+                                        vars$preferred_modality_yn, 
+                                        vars$utilization_needs_yn, 
+                                        vars$utilization_sell_yn, 
+                                        vars$utilization_save)))
+  
+```
+
+\newline
+
+## Overall program satisfaction
+
+#### Figure 2: % of respondents who reported they were satisfied or very satisfied with...
+```{r, echo = FALSE, fig.height = 7, fig.width=7}
+
+plotMultiVarSummary(varsToChart = rev(c(vars$satisfaction_reg_selection, 
+                                        vars$satisfaction_voucher_dist, 
+                                        vars$satisfaction_comm_received, 
+                                        vars$satisfaction_comm_services, 
+                                        vars$satisfaction_comm_dist, 
+                                        vars$satisfaction_community_role, 
+                                        vars$satisfaction_carm, 
+                                        vars$satisfaction_professionalism)),
+                    lookup_table = lookup_satisfaction)
+  
+```
+
+## Indicators
+
+### % of beneficiaries who report personal safety and/or security concerns related to food voucher transfers
+
+The target for this indicator is 5%. The "Reporting" column in the table represents the number of individual respondents reporting either a personal safety concern, a security concern, or both. The current level achieved for this indicator is **`r round(sum(table_indicator1$Reporting)/sum(table_indicator1$Total)*100, digits = 2)`%**.
+
+```{r table1, echo = FALSE}
+
+pandoc.table(table_indicator1, split.table = Inf)
+
+```
+
+##### Describe the safety/security concerns reported by the respondents.
+
+### % of targeted households who reported receiving monthly food commodities as defined in the food basket
+
+The target for this indicator is 100%. The current level achieved for this indicator is **`r round(sum(ona_df[[vars$amount_entitled_yn]] == 1)/nrow(ona_df)*100, digits = 2)`%**.
+
+```{r table2, echo = FALSE}
+
+pandoc.table(table_indicator2, split.table = Inf)
+
+```
+
+##### Describe the reasons why respondents may have said no.
+
+### % of targeted households satisfied with the food voucher transfer received
+
+The target for this indicator is 90%. The current level achieved for this indicator is **`r round(sum(table_indicator3$Satisfied)/sum(table_indicator3$Total)*100, digits = 2)`%**.
+
+```{r table3, echo = FALSE}
+
+pandoc.table(table_indicator3, split.table = Inf)
+
+```
+
+##### Describe the reasons why respondents may have said no.
+
+***
+
+# Distribution Overview
+
+##### Insert an overview of the program and the distribution here, including the target groups, distribution type and amounts, distribution partners, etc.
+
+## Methodology
+
+##### Describe your survey methodology, sample selection, etc.
+
+## Data Collection and Analysis  
+
+##### Review the below and adjust if needed.
+
+Data was collected using paper and pen, then manually entered into the Ona digital data collection software using Enketo (desk top). Data was cleaned and analyzed using the R open-source statistical language, and a template report was written in RMarkdown. Individual reports are the output of the template RMarkdown file (in which charts and tables are updated using the appropriate data for the period), and contextual/written analysis provided by the program Monitoring & Evaluation staff.
+
+## Limitations
+
+##### Describe the limitations of the data
+
+***
+
+# Profile of Households
+
+This section describes the profiles of households interviewed during this reporting period.  
+
+## Respondent Profile
+
+\newline
+
+#### Table 1: Respondents by administrative groupings
+
+```{r table4, echo = FALSE}
+# filter to Governorate and District, and make table
+
+table <- select(ona_df, one_of(vars$admin1, vars$admin2, vars$admin3, vars$admin4)) %>% 
+  group_by(!!sym(vars$admin1), !!sym(vars$admin2), !!sym(vars$admin3), !!sym(vars$admin4)) %>% 
+  summarise(Respondents = n()) %>% 
+  ungroup()
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+\newline
+
+#### Table 2: Sex and Age Disaggregated (SADD) respondents
+
+```{r echo = FALSE}
+
+table <- select(ona_df, one_of(geo, vars$gender, vars$age)) %>% 
+  mutate(`SADD Group` = makeSADD(!!sym(vars$gender), !!sym(vars$age))) %>% 
+  group_by(!!sym(geo), `SADD Group`) %>% 
+  summarise(Respondents = n()) %>% 
+  spread(!!sym(geo), Respondents) %>% 
+  janitor::adorn_totals(c("row", "col"))
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+\newline
+
+The average age of all respondents was `r round(mean(ona_df[[vars$age]], na.rm = T), digits = 1)` years.
+
+\newline
+
+#### Figure 3: Relationship of respondent to beneficiary
+```{r, echo=F, message=F, warning=F}
+
+plotSingleVar(var = vars$relationship_beneficiary,
+              factor_levels = c("Self", "Spouse", "Relative", "Elder child", "Caretaker", "Other"))
+
+```
+
+"Other" responses were: `r unique(!is.na(ona_df[vars$relationship_beneficiary_other]))`.
+
+## Household Size
+
+
+#### Figure 4: Average household size (by head of household)
+```{r, echo=F, message=F, warning=F}
+
+# select hh size, group by geo and hoh type, and calculate average
+filtered <- select(df, one_of(geo, vars$hoh, vars$hh_size)) %>%
+    group_by(!!sym(geo), !!sym(vars$hoh)) %>% 
+    summarise(n = n()) %>% 
+    merge(., respondents_pergeo, by = geo) %>% 
+    mutate(`% of respondents` = round(n/totalsubdist*100, digits = 2)) %>% 
+    rename(Response = !!sym(var))
+
+#Note: combine this and the following chart into one
+ggplot(filtered, aes(x = !!sym(vars$hoh), y = avg_size, fill = !!sym(vars$hoh))) +
+  geom_col() +
+  labs(x = "", 
+       y = "average # of hh members") +
+  facet_wrap(eval(expr(. ~ !!sym(vars$geo))), labeller = labeller(groupwrap = label_wrap_gen(10))) +
+  format_chart(textang = 45, legend_pos = "none") +
+  scale_fill_pander()
+
+```
+
+#### Figure 5: Average number of dependents per household (by head of household)
+```{r, echo=F, message=F, warning=F}
+
+# select hh dependents, group by geo and hoh type, and calculate average
+filtered <- select(df, one_of(geo, vars$hoh, vars$hh_dependents)) %>%
+    group_by(!!sym(geo), !!sym(vars$hoh)) %>% 
+    summarise(n = n()) %>% 
+    merge(., respondents_pergeo, by = geo) %>% 
+    mutate(`% of respondents` = round(n/totalsubdist*100, digits = 2)) %>% 
+    rename(Response = !!sym(var))
+
+#Note: combine this and the following chart into one
+ggplot(filtered, aes(x = !!sym(vars$hoh), y = avg_size, fill = !!sym(vars$hoh))) +
+  geom_col() +
+  labs(x = "", 
+       y = "average # of dependents") +
+  facet_wrap(eval(expr(. ~ !!sym(geo))), labeller = labeller(groupwrap = label_wrap_gen(10))) +
+  format_chart(textang = 45, legend_pos = "none") +
+  scale_fill_pander()
+
+```
+
+ \newline
+
+
+### Residency
+
+While `r round(sum(ona_df[[vars$hh_resident]] == 1)/nrow(ona_df), digits = 2)*100`% of households (n = `r sum(ona_df[[vars$hh_resident]] == 1)`)^["n" is defined as the numerator of the fraction presented as a percent, or the subset of the sample that is responding to the stated question in the direction indicated in the sentence. For example, in this sentence “n” is the number of program participants surveyed who normally reside within their current community. Unless otherwise noted the denominator of the fraction is the total number of participants surveyed.] reported themselves as normally residing in the community, the households that were new to the area gave the following reasons for relocating:
+
+#### Table 3: `r questions$hh_resident_reason`
+```{r echo = FALSE}
+
+tableSingleVar(var = vars$hh_resident_reason)
+
+```
+
+\newline
+
+### Modality Preferences
+
+Of respondents, `r round(sum(ona_df[[vars$preferred_modality_yn]] == 1)/nrow(ona_df), digits = 3)*100`% said they preferred to get assistance in the form of a food voucher. 
+
+#### Table 4: `r questions$preferred_modality_yn` (by geography)
+```{r echo = FALSE}
+
+table <- select(ona_df, one_of(vars$geo, vars$gender, vars$preferred_modality_yn)) %>% 
+  mutate_at(vars(one_of(vars$preferred_modality_yn)), funs(lookup_yn$value[match(., lookup_yn$factor)])) %>% 
+  group_by(!!sym(vars$geo), !!sym(vars$gender)) %>% 
+  summarise(prefer = sum(!!sym(vars$preferred_modality_yn), na.rm = T)) %>% 
+  spread(!!sym(vars$gender), prefer) %>% 
+  mutate(Total = Female + Male) %>% 
+  merge(., respondents_pergeo, by = geo)%>% 
+  mutate(`% answering Yes` = round(Total/totalsubdist*100, digits = 2)) %>% 
+  select(-totalsubdist) %>% 
+  rename(Response = !!sym(var))
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+Of those who did not wish to get assistance via voucher (n = `r sum(ona_df[[vars$preferred_modality_yn]] != 1)`), `r round(sum(ona_df[[vars$preferred_modality]] == "Cash transfer", na.rm = T)/sum(ona_df[[vars$preferred_modality_yn]] != 1), digits = 3)*100`% preferred to receive assistance in the form of cash, while `r round(sum(ona_df[[vars$preferred_modality]] == "Food distribution", na.rm = T)/sum(ona_df[[vars$preferred_modality_yn]] != 1), digits = 3)*100`% preferred a food distribution method.
+
+***
+
+# Beneficiary Selection and Distributions
+
+This section discusses findings about the quality of the distribution process, including the process for beneficiary selection, respondents' understanding of the distribution process, their experiences during the distribution, and their experiences in transit.
+
+## Beneficiary Selection
+
+#### Figure 6: Who selected your household to be the beneficiary of the food voucher?
+```{r, echo=F, message=F, warning=F}
+
+plotSingleVar(var = vars$how_registered)
+
+```
+
+\newline
+
+#### Figure 7: % of respondents who answered "Yes" when asked if they were informed about...
+```{r, echo=F, message=F, warning=F}
+
+plotMultiVarSummary(varsToChart = rev(c(vars$informed_placetimedist_yn, 
+                                        vars$informed_redemption_yn, 
+                                        vars$informed_amount_yn, 
+                                        vars$informed_typeamount_yn, 
+                                        vars$informed_namevendors_yn)))
+
+```
+
+\newline
+
+***
+
+\newline
+
+## Distribution Process
+
+Of the `r nrow(ona_df)` participants surveyed, `r round(sum(ona_df[[vars$received_lastdist_yn]] == 1, na.rm = T)/nrow(ona_df), digits = 3)*100`% have received a voucher in the last round of distributions. Those who have not received a voucher gave the following reasons: `r unique(ona_df[[vars$received_lastdist_reason]])`.
+
+### Respondent experience with logistics of voucher distribution
+
+\newline
+
+#### Figure 8: `r questions$dist_attn`
+```{r, echo = FALSE, fig.height=6, message=F}
+
+plotSingleVar(var = vars$dist_attn)
+  
+```
+
+***
+
+\newline
+
+#### Figure 9: How long did it take to reach the voucher distribution site?
+```{r, echo = FALSE, message=F}
+
+plotSingleVar(var = vars$time_tosite)
+  
+```
+
+##### Insert and qualitative analysis desired for travel times.
+
+***
+
+\newline
+
+#### Figure 10: Time vs Costs to get to the distribution
+```{r, echo = FALSE, fig.height=6, message=F}
+
+# stacked bar approach
+
+cost_labels <- paste0("(", 
+                 head(seq(0, max(ona_df[[vars$costs_tosite]], na.rm = T), by=500), -1), 
+                 "-", 
+                 seq(500, max(ona_df[[vars$costs_tosite]], na.rm = T), by=500), 
+                 "]")
+
+cost_labels <- c(gsub("\\(", "[", cost_labels[1]), cost_labels[-1])
+
+ona_df$costs <- cut(ona_df[[vars$costs_tosite]], 
+                             seq(0, max(ona_df[[vars$costs_tosite]], na.rm = T), by=500), 
+                             labels = cost_labels,
+                             include.lowest=TRUE, 
+                             dig.lab = 5)
+
+costs1 <- select(ona_df, one_of(vars$geo, vars$time_tosite), costs) %>% 
+  group_by(!!sym(vars$geo), !!sym(vars$time_tosite), costs) %>% 
+  summarise(costs = n())
+
+ggplot(costs1, aes(x = !!sym(vars$time_tosite), y = costs, fill = costs)) + 
+  geom_bar(stat = "identity") +
+  xlab("time to reach distribution") +
+  ylab("count of respondents") +
+    facet_wrap(eval(expr(. ~ !!sym(vars$geo)))) +
+  format_chart(textang = 45) +
+  scale_fill_pander()
+
+
+
+# jittered boxplot approach
+# ggplot(select(ona_df, one_of(vars$id, vars$time_tosite, vars$costs_tosite)), aes(x = !!sym(vars$time_tosite), y = !!sym(vars$costs_tosite))) +
+#   geom_jitter(aes(fill = !!sym(vars$time_tosite)), 
+#               width = 0.1, shape = 21) +
+#   geom_boxplot(aes(fill = !!sym(vars$time_tosite)), colour = "black", width = 0.4,
+#                show.legend = FALSE, outlier.shape = NA, alpha = 0.8) +
+#   xlab("") +
+#   ylab("YER") +
+#   #facet_grid(eval(expr(. ~ !!sym(vars$geo))), space = "free_x") +
+#   format_chart() +
+#   scale_fill_pander()
+
+  
+```
+
+
+***
+
+\newline
+
+#### Figure 11: How long did you have to wait at the distribution site to get the voucher?
+```{r, echo = FALSE, message=F}
+
+plotSingleVar(var = vars$time_atsite)
+  
+```
+
+
+##### Insert any qualitative analysis desired for the wait times.
+
+***
+
+# Voucher Redemption and Commodity Utilization
+
+This section discusses findings about the quality of commodities provided and experience with vendors, as well as the characteristics of voucher redemption, and how the commodities received through the voucher were utilized by the beneficiaries.
+
+## Voucher Redemption
+
+Of the respondents, `r round(sum(ona_df[[vars$voucher_redeem]] == 1, na.rm = T)/nrow(ona_df), digits = 3)*100`% have redeemed the last voucher received. Those who have not redeemed the vouchers gave the following reasons: "`r paste(unique(na.omit(ona_df[[vars$voucher_redeem_reasonno]])), collapse = "', '")`".
+
+#### Table 5: `r questions$voucher_redeem_days`
+```{r table9, echo = FALSE}
+
+pandoc.table(table(select(ona_df, one_of(vars$voucher_redeem_days, vars$geo))), split.table = Inf)
+
+```
+
+***
+
+#### Figure 12: `r questions$comm_receivetime`
+```{r, echo = FALSE, message=F}
+
+plotSingleVar(var = vars$comm_receivetime)
+  
+```
+
+***
+
+#### Table 6: `r questions$comm_receivemethod`
+```{r table10, echo = FALSE}
+
+table <- as.data.frame(table(select(ona_df, one_of(vars$comm_receivemethod, vars$geo)))) %>% 
+  spread(!!sym(vars$geo), Freq) %>% 
+  mutate(Total = rowSums(select(., -!!sym(vars$comm_receivemethod))))
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+\newline
+
+## Feedback on Commodities Provided
+
+Of respondents, `r round(sum(ona_df[[vars$amount_entitled_yn]] == 1, na.rm = T)/nrow(ona_df), digits = 3)*100`% (n = `r sum(ona_df[[vars$amount_entitled_yn]] == 1, na.rm = T)`) think they received the monthly food basket they were entitled to.
+
+#### Table 7: Reasons reported by respondents for not receiving the monthly food basket entitled to
+```{r table11, echo = FALSE}
+
+pandoc.table(table(select(ona_df, one_of(vars$amount_entitled_reason, vars$geo))), split.table = Inf)
+
+```
+
+
+\newline
+
+## Commodity Utilization
+ 
+#### Table 8: `r questions$utilization_decide`
+```{r table12, echo = FALSE}
+
+table <- as.data.frame(table(select(ona_df, one_of(vars$utilization_decide, vars$geo)))) %>% 
+  spread(!!sym(vars$geo), Freq) %>% 
+  mutate(Total = rowSums(select(., -!!sym(vars$utilization_decide))))
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+
+\newline
+
+#### Table 9: `r questions$voucher_benefit`
+```{r table13, echo = FALSE}
+
+#deal with select all that apply variable
+codebook_snip <- filter(codebook, auto_var == "voucher_benefit") %>% 
+                    select(source_code, end_code)
+
+l <- strsplit(ona_df[[vars$voucher_benefit]], split = " ")
+        
+  for(j in seq_along(codebook_snip$source_code)) {
+    l <- lapply(l, str_replace, 
+                  pattern = codebook_snip$source_code[j], 
+                  replacement = codebook_snip$end_code[j])
+  }
+
+indx <- sapply(l, length)
+table <- cbind(select(ona_df, one_of(vars$geo)), as.data.frame(do.call(rbind,lapply(l, `length<-`,
+                          max(indx))))) %>% 
+  melt(id.vars = c(vars$geo)) %>% 
+  select(-variable) %>% 
+  table(.) %>% 
+  as.data.frame(.) %>% 
+  spread(!!sym(vars$geo), Freq) %>% 
+  rename(., c(value = "Benefit")) %>% 
+  mutate(Total = rowSums(select(., -Benefit)))
+
+if(nrow(table) > 1){
+  pandoc.table(table, split.table = Inf)
+}
+
+```
+
+***
+
+##### Insert qualitative narrative here around the reasons (if any) given for their utilization choices.
+
+***
+
+# Safety and Security
+
+Of the `r nrow(ona_df)` respondents:
+
+* `r round(sum(ona_df[[vars$program_exchange]] == 1)/nrow(ona_df), digits = 3)*100`% of respondents said they knew someone, including themselves, who was asked for favors to be registered for a food voucher. Those respondents reported that the favors asked for were: `r unique(ona_df[[vars$favors]][!is.na(ona_df[[vars$favors]])])`.
+* `r round(sum(ona_df[[vars$safe_atsite_yn]] == 2)/nrow(ona_df), digits = 3)*100`% of respondents (n = `r sum(ona_df[[vars$safe_atsite_yn]] == 2)`) said they did not feel safe at the voucher distribution place. Those respondents who did not feel safe reported the following reasons: `r unique(ona_df[[vars$safe_atsite_reason]][!is.na(ona_df[[vars$safe_atsite_reason]])])`.
+* `r round(sum(ona_df[[vars$problems_corrupt_yn]] == 1)/nrow(ona_df), digits = 3)*100`% of respondents said they were asked to give something in order to receive the voucher.
+* `r round(sum(ona_df[[vars$comm_receivesafe_yn]] == 2)/nrow(ona_df), digits = 3)*100`% of respondents (n = `r sum(ona_df[[vars$comm_receivesafe_yn]] == 2)`) said they did not feel secure at the vendor(s) place where they received the food. Those respondents who did not feel secure gave the following reasons: `r unique(ona_df[[vars$comm_receivesafe_reason]][!is.na(ona_df[[vars$comm_receivesafe_reason]])])`.
+* `r round(sum(ona_df[[vars$comm_corruptioncheck]] == 1)/nrow(ona_df), digits = 3)*100`% of respondents said they were asked to give something to the vendor in return for receiving the food commodities. Those respondents who reported being asked to give something said they gave the following: `r unique(ona_df[[vars$comm_corruptionwhat]][!is.na(ona_df[[vars$comm_corruptionwhat]])])`.
+
+***
+
+## CARM
+
+
+#### Figure 13: Understanding of and participation in CARM procedures (Respondents answering "Yes")
+```{r, echo = FALSE, message = F, warning=F}
+
+varsToChart <- rev(c(vars$carm_aware_contact, vars$carm_ever_report))
+
+# create label vector
+labels <- rev(as.vector(as.matrix(select(filter(data_dict, pdm_var %in% varsToChart), question))))
+
+ggplot(generateYesNoDF(), aes(x = variable, y = value, fill = !!sym(vars$geo))) +
+  geom_col(position = "dodge") +
+  labs(x = "", 
+       y = "% of respondents") +
+    scale_x_discrete(labels = str_wrap(labels, width = 30)) + 
+  coord_flip() +
+  format_chart(legend_name = "District:") +
+  geom_text(aes(label = paste0(as.character(round(value, digits = 1)), "%")), position = position_dodge(width=0.9), size = 2.5) 
+  
+```
+
+\newline
+
+Of all respondents, `r sum(ona_df[[vars$carm_ever_report]] == 1)` said they had used one of the partners' feedback mechanisms.
+
+Of all respondents, `r round(sum(ona_df[[vars$carm_aware_contact]] == 1)/nrow(ona_df)*100, digits = 3)`% said they had information about where to complain if they were not happy about any issues regarding the voucher.
+
+\newline
+
+#### Figure 14: `r questions$carm_prefer_report`
+```{r, echo = FALSE, warning = F, message = F}
+
+codebook_snip <- filter(codebook, auto_var == "carm_prefer_report") %>% 
+                    select(source_code, end_code)
+
+l <- strsplit(ona_df[[vars$carm_prefer_report]], split = " ")
+        
+  for(j in seq_along(codebook_snip$source_code)) {
+    l <- lapply(l, str_replace, 
+                  pattern = codebook_snip$source_code[j], 
+                  replacement = codebook_snip$end_code[j])
+  }
+
+indx <- sapply(l, length)
+
+table <- cbind(id = seq(1, length(l)), as.data.frame(do.call(rbind,lapply(l, `length<-`,
+                          max(indx))))) %>% 
+  melt(id.vars = "id") %>% 
+  select(-variable) %>% 
+  table(.) %>% 
+  as.data.frame(.) 
+
+ggplot(table, aes(x = reorder(value, Freq), y = Freq, fill = value)) +
+  geom_col() +
+  labs(x = "", 
+       y = "# of respondents") +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 20)) + 
+  coord_flip() +
+  #facet_wrap(eval(expr(. ~ !!sym(vars$geo))), labeller = labeller(groupwrap = label_wrap_gen(10)), ncol = 1) +
+  scale_fill_pander() +
+  theme(legend.position = "none")
+
+```
+
+\newline
+
+***
+
+\newline
+
+# General Conclusions and Recommendations
+
+##### Insert general conclusions from the entire report, and recommendations for improving distributions here.

@@ -1,0 +1,814 @@
+---
+title: "KAP Survey Analysis"
+author: "Program:"
+date: "MONTH 2020"
+output:
+  word_document:
+    toc: true
+    reference_docx: ./wordStylesReferenceMC.docx
+  pdf_document: default
+params:
+  form_id: NA
+  password: NA
+  username: NA
+  monthToRun: NA
+---
+
+```{r setup, include=FALSE}
+# This is the automated KAP Report template. This file should be run in R Studio to produce the PDM Report
+# This file works with the template form found HERE #todo and the wordStylesReferenceMC.docx
+# The referenced variables within this template need to be matched to your real data variable names via either a data dictionary, or by directly modifying the variable references
+
+# This is a code chunk, these boxes are where the calculations take place
+# Text in a code chunk with a # in front of it is a comment and is used to explain what is happening
+
+# This chunk, setup, loads the R packages that will be used
+# You shouldn't need to make any changes here unless you are an advanced user
+
+knitr::opts_chunk$set(echo = TRUE, results = 'asis')
+knitr::opts_chunk$set(dpi = 300, fig.width=8)
+
+# Checks if necessary packages are installed on the system, if not installs them
+# Need to be online for this to work, and may take some time the first time your run. Only required to install once
+# and will run much faster the second time
+list.of.packages <- c("tidyverse", "rmarkdown", "knitr", "ggthemes", "pander", "reshape2", "summarytools", "here", "lubridate", "RColorBrewer",  "googledrive")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+# Loads the required packages
+library(tidyr)          # extra functions
+library(httr)           # accessing the REST API
+library(jsonlite)       # parsing the JSON from the API
+library(stringr)        # format column names, label names, otherwise work with strings
+library(dplyr)          # data manipulation
+library(ggplot2)        # graphing
+library(rmarkdown)      # to generate the report
+library(knitr)          # making the final word document
+library(pander)         # markdown formatting
+library(ggthemes)       # extra themes for the graphics
+library(reshape2)        # for changing dfs from wide to long
+library(summarytools)   # on some machines this may require installing an Xquartz library locally
+library(lubridate)      # for date formatting
+library(here)           # for file path referencing
+library(RColorBrewer)   # for file path referencing
+library(googledrive)    # fir retrieving files from GDrive
+
+# renv is used to track package dependencies and store a working snapshot that can always be used as a backup in case a package upgrade throws things off
+## renv::revert(commit = '')
+## renv::restore()
+
+# Sets global options for the document that control some appearance settings
+st_options('omit.headings', TRUE)
+st_options('bootstrap.css', FALSE)
+st_options('footnote', NA)
+#more param options here https://bookdown.org/yihui/rmarkdown/params-knit.html#knit-with-custom-parameters
+
+```
+
+```{r ona_pull, include=FALSE}
+# This is where the data from Ona gets pulled into R for processing, or static files are uploaded
+# You shouldn't need to make any changes here. If you encounter errors with importing contact hcamp@mercycorps.org
+
+# GET the information from Ona, using the form_id, username and password params
+# the data retrieved from this call is not saved when the report is run
+     ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", params$form_id),
+                           authenticate(params$username, params$password))
+
+# Makes the dataframe with submissions from Ona
+       ona_df <- content(ona_raw_request,"text") %>%    # this gets the actual content from the HTTP request
+                  fromJSON()                           # This converts the JSON to an R dataframe
+
+```
+
+```{r functions, include = FALSE}
+
+# Retrieve needed function files
+source("./functions/plotSingleVar.R")
+source("./functions/plotMultiVar.R")
+source("./functions/tableSingleVar.R")
+source("./functions/makeSADD.R")
+source("./functions/format_chart.R")
+source("./functions/generateYesNoDF.R")
+
+# create vector of colors for geographies - comment out colors not to be used
+  mcColors <- c(
+                "#c8102e", 
+                "#71757b",
+                "#33bfbb", 
+                "#ffdb33", 
+                "#9ac933", 
+                "#877fae",
+                "#d45c11")
+
+```
+
+```{r pre_process, include = FALSE, cache = FALSE}
+
+########################################################################
+# load data dictionary and codebook appropriate to Program  
+  ## authenticate yourself with google sheets - must be authenticated with account where they are stored
+  # drive_auth(
+  #   email = gargle::gargle_oauth_email(),
+  #   path = NULL,
+  #   scopes = "https://www.googleapis.com/auth/drive",
+  #   cache = gargle::gargle_oauth_cache(),
+  #   use_oob = gargle::gargle_oob_default(),
+  #   token = NULL
+  # )
+
+  ## download appropriate data dictionary Drive file by id and load as df
+  # this dictionary matches variables tabled/plotted in the template with the actual variable names in the dataset
+  drive_download(drive_get(id = "DATA DICT SHEET ID", 
+                           team_drive = "TEAM DRIVE"),
+                      path = "data_dict.csv",
+                      overwrite = T)
+  
+  data_dict <- read.csv("./data_dict.csv", stringsAsFactors = F)
+  
+  ## download appropriate codebook Drive file by id and load as df
+  drive_download(drive_get(id = "CODEBOOK SHEET ID", 
+                           team_drive = ""),
+                      path = "codebook.csv",
+                      overwrite = T)
+  
+  codebook <- read.csv("./codebook.csv", stringsAsFactors = F)
+  
+
+#########################################################################################
+## trim whitespace from before and after a column's values if it is a character column
+  ona_df <- ona_df %>% 
+    mutate_if(is.character, trimws)
+
+# create named list of var names and questions for referencing
+  vars <- as.list(data_dict[, 2])
+  names(vars) <- data_dict[, 1]
+  
+  questions <- as.list(data_dict[, 3])
+  names(questions) <- data_dict[, 1] 
+  
+# store codebook table variables for reference
+  ## REMOVE select all variables
+   codebook_vars <- unique(codebook$auto_var)
+   
+# filter the dataset to the time frame needed
+## putting dates into a useable format, find the month of each entry
+  ona_df$ymdDate <- ymd(ona_df[vars$date])
+  ona_df$month <- month(ona_df$ymdDate)
+  ona_df$monthName <- month.name[ona_df$month]
+
+## filter ona_df by monthsToRun param
+  ona_df <- filter(ona_df, month %in% params$monthToRun)
+  
+# uncode coded data
+# TODO replace funs with list
+# TODO a bulk Yes/No search and replace
+  for (i in seq_along(codebook_vars)) {
+   if(codebook_vars[i] %in% data_dict$auto_var == T) {  
+      codebook_snip <- filter(codebook, auto_var == codebook_vars[i]) %>% 
+        select(source_code, end_code)
+      ona_df <- mutate_at(ona_df,
+                          .vars = vars(vars[[codebook_vars[i]]]), 
+                          .funs = list(~ codebook_snip$end_code[match(., codebook_snip$source_code)]))
+    }
+  }
+
+
+# create Y/N lookup tables in case the teams don't have that in the codebook
+#TODO functionize this better using codebook
+  lookup_yn <- data.frame(factor = c("yes", "no"),
+                          value = c(1, 0))
+  
+  lookup_yn2 <- data.frame(factor = c("Yes", "No"),
+                          value = c(1, 0))
+
+#store the geographic disaggregation variable as an object for later reference
+  geo <- vars$geo
+
+## calculate respondents per geo for later reference
+  respondents_pergeo <- select(ona_df, !!sym(geo)) %>% 
+    group_by(!!sym(geo)) %>% 
+    summarise(totalgeo = n())
+
+
+```
+
+
+# How to use this report
+
+##### This report is not a final PDM report. The charts and tables represent the most recent data, however, the narrative and interpretation of the graphs should explain the reasons and interpretation behind the findings. This must be provided by someone with knowledge of the program. Temporary text that is highlighted in yellow and italicized (like this text) indicates where narrative should be provided. Use your judgment about what narrative needs to be provided, and be sure to delete all the temporary text before sharing with others!
+
+##### Text that is not highlighted is automatically generated, and the numbers within that non-highlighted text are automatically calculated based on your data. You may leave the non-highlighted text as is, delete it if you feel it is not useful, or add additional context to it.
+
+##### This section ("How to use this report") should be deleted prior to distribution of the final report.
+
+## Sample Size and Data Collection Period
+
+##### If the actual data collection period was different from the date span in the data, please correct the text provided below. The text following this sentence is automatically generated using the data.
+
+The data used in this report was collected between `r sort(ona_df$ymdDate)[1]` and 2020-03-20. The total number of respondents in that period was `r nrow(ona_df)`.
+
+
+## Introduction
+
+##### Give a summary of the program and survey purpose here.
+
+
+***
+
+# Survey Overview
+
+##### Insert an overview of the target groups, partners, and other aspects of the program that may inform understanding of the survey.
+
+## Methodology
+
+##### Insert an overview of the survey tool, sampling methodology, etc.
+
+## Data Collection and Analysis  
+
+##### Review and confirm the below details.
+
+Data was collected using paper and pen, then manually entered into the Ona digital data collection software using Enketo (desk top). Data was cleaned and analyzed using the R open-source statistical language, and a template report was written in RMarkdown. Individual reports are the output of the template RMarkdown file (in which charts and tables are updated using the appropriate data for the period), and contextual/written analysis provided by the program Monitoring & Evaluation staff.
+
+## Limitations
+
+##### Detail any limitations
+
+***
+
+# Respondent & Household Profile
+
+This section describes the profiles of respondents interviewed during this reporting period, and reported household characteristics.  
+
+\newline
+
+#### Table 1: Total respondents by administrative units
+
+```{r table1, echo = FALSE}
+
+table <- select(ona_df, one_of(vars$admin1, vars$admin2, vars$admin3, vars$admin4)) %>% 
+  group_by(!!sym(vars$admin1), !!sym(vars$admin2), !!sym(vars$admin3), !!sym(vars$admin4)) %>% 
+  summarise(Respondents = n()) %>% 
+  ungroup()
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+\newline
+
+***
+
+#### Table 2: Sex and Age Disaggregated (SADD) respondents by geography
+
+```{r echo = FALSE}
+
+table <- select(ona_df, one_of(geo, vars$gender, vars$age)) %>% 
+  mutate(`SADD Group` = makeSADD(!!sym(vars$gender), !!sym(vars$age))) %>% 
+  group_by(!!sym(geo), `SADD Group`) %>% 
+  summarise(Respondents = n()) %>% 
+  spread(!!sym(geo), Respondents) %>% 
+  janitor::adorn_totals(c("row", "col"))
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+\newline
+
+***
+
+#### Table 3: Sex and Age Disaggregated (SADD) respondents as % of total respondents by geography 
+
+```{r echo = FALSE}
+
+table <- select(ona_df, one_of(geo, vars$gender, vars$age)) %>% 
+  mutate(`SADD Group` = makeSADD(!!sym(vars$gender), !!sym(vars$age))) %>% 
+  group_by(!!sym(geo), `SADD Group`) %>% 
+  summarise(Respondents = n()) %>% 
+  left_join(., respondents_pergeo, by = geo) %>% 
+  mutate(perc = paste0(round(Respondents/totalgeo*100, digits = 2), "%")) %>% 
+  select(-Respondents, -totalgeo) %>% 
+  spread(!!sym(geo), perc)
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+\newline
+
+***
+
+#### Table 4: Average number of household members by geography
+
+```{r table3, echo = FALSE}
+
+table <- select(ona_df, one_of(geo, vars$numhh_male, vars$numhh_female, vars$numhh_total)) %>% 
+  reshape2::melt(., id.vars = geo) %>% 
+  group_by(!!sym(geo), variable) %>% 
+  mutate_at(vars(value),
+            as.numeric) %>%
+  summarise(Average = round(mean(value), digits = 2)) %>% 
+  ungroup() %>% 
+  spread(variable, Average) %>% 
+  adorn_totals("row")
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+\newline
+
+## Marital & Household Status
+
+#### Table 5: What is your household status?
+```{r echo = FALSE}
+
+table <- select(ona_df, one_of(geo, vars$hh_status)) %>% 
+  filter(!is.na(!!sym(vars$hh_status))) %>% 
+  group_by(!!sym(geo), !!sym(vars$hh_status)) %>%
+  summarise(count = n()) %>% 
+  ungroup() %>% 
+  spread(!!sym(vars$hh_status), count) %>% 
+  adorn_totals("row")
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+\newline
+
+***
+
+#### Table 6: What is your marital status?
+```{r echo = FALSE}
+
+table <- select(ona_df,  one_of(geo, vars$marital_status)) %>% 
+  filter(!is.na(!!sym(vars$marital_status))) %>% 
+  group_by(!!sym(geo), !!sym(vars$marital_status)) %>%
+  summarise(count = n()) %>% 
+  ungroup() %>% 
+  spread(!!sym(vars$marital_status), count) %>% 
+  adorn_totals(c("row"))
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+
+\newline
+
+***
+
+#### Figure 1: `r questions$school_length`
+```{r, echo = FALSE, message=F, warning=F}
+
+plotSingleVar(var = vars$school_length,
+              factor_levels = c("Did not attend", "Elementary", "Secondary", "High", "College"))
+
+```
+
+\newline
+
+***
+
+#### Figure 2: `r questions$hhhead_occupation`
+```{r, echo = FALSE, message=F, warning=F}
+
+plotSingleVar(var = vars$hhhead_occupation)
+
+```
+
+\newline
+
+***
+
+#### Table 7: "Other" responses to "What is the occupation of the household head?"
+```{r, echo = FALSE, message=F, warning=F}
+
+tableSingleVar(var = vars$hhhead_occupation_other)
+
+```
+
+
+# WASH
+
+#### Figure 3: `r questions$water_source`
+```{r, echo = FALSE, message=F, warning=F}
+
+plotSingleVar(var = vars$water_source, nrow = 3)
+
+```
+
+***
+
+#### Figure 4: `r questions$water_time`
+```{r echo = FALSE, message=F, warning=F}
+
+plotSingleVar(var = vars$water_time, nrow = 1)
+
+```
+
+***
+
+#### Figure 5: `r questions$water_hhuse`
+```{r echo = FALSE, message=F, warning=F}
+
+plotSingleVar(var = vars$water_hhuse,
+              factor_levels = c("10 – 40 liters", "40 – 80 liters", "80 – 120 liters", "More than 105 liters"), 
+              nrow = 1)
+
+```
+
+***
+
+#### Figure 6: `r questions$water_problems`
+```{r echo = FALSE, message=F, warning=F}
+
+plotSingleVar(var = vars$water_problems, nrow = 4)
+
+```
+
+***
+
+## Respondent Opinions
+
+#### Figure 7: Why it is important for a person to wash his/her hands?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block5")
+
+```
+
+\newline
+
+***
+
+#### Figure 8: When do you think is the most important time for people to wash their hands?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block6", nrow = 3)
+
+```
+
+\newline
+
+***
+
+#### Figure 9: Why is it important to dispose of garbage?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block7")
+
+```
+
+\newline
+
+***
+
+#### Figure 10: What are good ways of disposing of garbage?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block8")
+
+```
+
+\newline
+
+***
+
+#### Table 8: "Other" responses to "What are good ways of disposing of garbage?""
+```{r echo=F, message=F, warning=F}
+
+tableSingleVar(var = vars$garbage_disposal_other)
+
+```
+
+***
+
+#### Figure 11: What are some ways to make water safe for drinking?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block9")
+
+```
+
+\newline
+
+***
+
+#### Table 9: "Other" responses to "What are some ways to make water safe for drinking?"
+```{r echo=F, message=F, warning=F}
+
+filtered <- select(ona_df, one_of(geo, vars$water_safe_other)) %>%
+  filter(!is.na(!!sym(vars$water_safe_other))) %>% 
+  count(!!sym(geo), !!sym(vars$water_safe_other)) %>% 
+  merge(., respondents_pergeo, by = geo) %>% 
+  mutate(`%` = round(n/totalgeo*100, digits = 2)) %>% 
+  select(-totalgeo)
+  
+pandoc.table(filtered, split.table = Inf)
+
+```
+
+***
+
+#### Figure 12: What are some ways to keep food safe for eating?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block11")
+
+```
+
+\newline
+
+***
+
+#### Figure 13: Do you know what the main causes of diarrhea are?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block12")
+
+```
+
+\newline
+
+***
+
+#### Figure 14: How can we prevent diarrhea?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block13")
+
+```
+
+\newline
+
+***
+
+#### Table 10: "Other" responses to "What do you do when your children have diarrhea?"
+```{r echo=F, message=F, warning=F}
+
+filtered <- select(ona_df, one_of(geo, vars$diarrhea_other)) %>%
+  filter(!is.na(!!sym(vars$diarrhea_other))) %>% 
+  count(!!sym(geo), !!sym(vars$diarrhea_other)) %>% 
+  merge(., respondents_pergeo, by = geo) %>% 
+  mutate(`%` = round(n/totalgeo*100, digits = 2)) %>% 
+  select(-totalgeo)
+  
+pandoc.table(filtered, split.table = Inf)
+
+```
+
+***
+
+#### Figure 15: When do you and your family members usually wash your hands?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block15", nrow = 3)
+
+```
+
+\newline
+
+***
+
+#### Figure 16: If you treat water before using it, how do you treat the water?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block19")
+
+```
+
+\newline
+
+***
+
+#### Table 11: "Other" responses to "If you treat water before using it, how do you treat the water?"
+```{r echo=F, message=F, warning=F}
+
+filtered <- select(ona_df, one_of(geo, vars$water_treat_other)) %>%
+  filter(!is.na(!!sym(vars$water_treat_other))) %>% 
+  count(!!sym(geo), !!sym(vars$water_treat_other)) %>% 
+  merge(., respondents_pergeo, by = geo) %>% 
+  mutate(`%` = round(n/totalgeo*100, digits = 2)) %>% 
+  select(-totalgeo)
+  
+pandoc.table(filtered, split.table = Inf)
+
+```
+
+***
+
+#### Figure 17: What do you practically do to keep food safe for eating?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block20")
+
+```
+
+\newline
+
+***
+
+#### Figure 18: Where does your family dispose of garbage?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block21")
+
+```
+
+\newline
+
+***
+
+#### Table 12: "Other" responses to "Where does your family dispose of garbage?"
+```{r echo=F, message=F, warning=F}
+
+filtered <- select(ona_df, one_of(geo, vars$garbage_dispose_other)) %>%
+  filter(!is.na(!!sym(vars$garbage_dispose_other))) %>% 
+  count(!!sym(geo), !!sym(vars$garbage_dispose_other)) %>% 
+  merge(., respondents_pergeo, by = geo) %>% 
+  mutate(`%` = round(n/totalgeo*100, digits = 2)) %>% 
+  select(-totalgeo)
+  
+pandoc.table(filtered, split.table = Inf)
+
+```
+
+***
+
+#### Figure 19: What type of container do you use to store drinking water in your house?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block22", nrow = 1)
+
+```
+
+\newline
+
+***
+
+#### Table 13: Is the container covered? (by Observation)
+```{r echo=F, message=F, warning=F}
+
+filtered <- select(ona_df, one_of(geo, vars$water_covered)) %>%
+  filter(!is.na(!!sym(vars$water_covered))) %>% 
+  count(!!sym(geo), !!sym(vars$water_covered)) %>% 
+  merge(., respondents_pergeo, by = geo) %>% 
+  mutate(`%` = round(n/totalgeo*100, digits = 2)) %>% 
+  select(-totalgeo)
+  
+pandoc.table(filtered, split.table = Inf)
+
+```
+***
+
+#### Figure 20: What type of container do you use to transport drinking water from the source to house?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block24", nrow = 1)
+
+```
+
+\newline
+
+***
+
+#### Table 14: "Other" responses to "What type of container do you use to transport drinking water from the source to house?"
+```{r echo=F, message=F, warning=F}
+
+filtered <- select(ona_df, one_of(geo, vars$water_container_other)) %>%
+  filter(!is.na(!!sym(vars$water_container_other))) %>% 
+  count(!!sym(geo), !!sym(vars$water_container_other)) %>% 
+  merge(., respondents_pergeo, by = geo) %>% 
+  mutate(`%` = round(n/totalgeo*100, digits = 2)) %>% 
+  select(-totalgeo)
+  
+pandoc.table(filtered, split.table = Inf)
+
+```
+
+***
+
+#### Figure 21: How is the drinking water container(s) looked after?
+```{r echo=F, message=F, warning=F}
+
+plotSingleVar(var = vars$water_container_care, nrow = 3)
+
+```
+
+\newline
+
+***
+
+#### Figure 22: `r questions$latrine_yn`
+```{r warning = F, echo = FALSE, fig.height = 4, fig.width=7}
+
+plotSingleVar(var = vars$latrine_yn, nrow = 1)
+  
+```
+
+***
+
+#### Figure 23: If yes, does your family use the latrine in a regular basis?
+```{r warning = F, echo = FALSE, fig.height = 4, fig.width=7}
+
+    filtered <- select(ona_df, one_of(geo, !!sym(vars$latrine_yn), !!sym(vars$latrine_regularuse_yn))) %>% 
+      filter(!!sym(vars$latrine_yn) == "Yes",
+             !is.na(!!sym(vars$latrine_regularuse_yn))) %>% 
+      group_by(!!sym(geo), !!sym(vars$latrine_regularuse_yn)) %>% 
+      summarise(n = n()) %>% 
+      rename(Response = !!sym(vars$latrine_regularuse_yn))
+  
+    filtered$Response  <- with(filtered, reorder(Response, -n))
+  
+    ggplot(filtered, aes(x = Response, 
+                       y = n, fill = Response)) +
+    geom_bar(position = position_dodge2(preserve = "single"), alpha = .9, stat = "identity") +
+    facet_grid(. ~ !!sym(geo), space = "free_x") +
+    format_chart() +
+    scale_fill_pander() +
+    theme(axis.text.x=element_blank()) +
+    xlab("") +
+      ylab("# of respondents") +
+    geom_text(aes(label = paste0(as.character(round(n, digits = 1)))), 
+              position = position_dodge(width=0.9), size = 2.5)
+  
+```
+
+***
+
+# Breastfeeding Practices
+
+#### Figure 24: `r questions$breastfeedingimpt_yn`
+```{r echo=F, message=F, warning=F}
+
+plotSingleVar(var = vars$breastfeedingimpt_yn, nrow = 1)
+
+```
+
+\newline
+
+***
+
+#### Figure 25: `r questions$breastfeeding_exclusive_yn`
+```{r echo=F, message=F, warning=F}
+
+plotSingleVar(var = vars$breastfeeding_exclusive_yn, nrow = 1)
+
+```
+
+\newline
+
+***
+
+#### Figure 26: Why do you think exclusive breastfeeding is important?
+```{r echo=F, message=F, warning=F}
+
+plotMultiVar(var_marker = "question_block31", nrow = 1)
+
+```
+
+\newline
+
+***
+
+#### Figure 27: `r questions$breastfeeding_when`
+```{r echo=F, message=F, warning=F}
+
+plotSingleVar(var = vars$breastfeeding_when,
+              factor_levels = c("Within one hour after birth",
+                                "Within one day after birth",
+                                "After three days",
+                                "Don't know"), nrow = 1)
+
+```
+
+\newline
+
+***
+
+#### Figure 28: `r questions$breastfeeding_continue6mos`
+```{r echo=F, message=F, warning=F}
+
+plotSingleVar(var = vars$breastfeeding_continue6mos, nrow = 1)
+
+```
+
+\newline
+
+***
+
+#### Table 15: `r questions$breastfeeding_howmanymos`
+```{r echo = FALSE, message=F}
+
+tableSingleVar(vars$breastfeeding_howmanymos)
+
+```
+
+***
+
+
+# General Conclusions and Recommendations
+
+##### Insert general conclusions from the entire report, and recommendations for improving distributions here.

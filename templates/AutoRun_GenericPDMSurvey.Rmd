@@ -131,11 +131,6 @@ source("./functions/generateYesNoDF.R")
   
   codebook <- read.csv("./codebook.csv", stringsAsFactors = F)
   
-
-# putting dates into a useable format
-  ona_df$ymdDate <- ymd(ona_df$`A/data`)
-  ona_df$month <- month(ona_df$`A/data`)
-  ona_df$monthName <- month.name[ona_df$month]
   
 #########################################################################################
 ## trim whitespace from before and after a column's values if it is a character column

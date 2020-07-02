@@ -1,0 +1,315 @@
+---
+title: "Cash Post-Distribution Monitoring Report"
+author: "Rapid Onset Emergencies"
+date: "DRAFT 2020"
+output:
+  word_document:
+    toc: true
+    reference_docx: ./wordStylesReferenceMC.docx
+  pdf_document: default
+params:
+  form_id: NA
+  password: NA
+  username: NA
+  monthToRun: 10
+---
+
+```{r setup, include=FALSE}
+# This is the automated PDM Report template. This file should be run in R Studio to produce the PDM Report
+# This file works with the template form found HERE #todo and the wordStylesReferenceMC.docx
+
+# This is a code chunk, these boxes are where the calculations take place
+# Text in a code chunk with a # in front of it is a comment and is used to explain what is happening
+
+# This chunk, setup, loads the R packages that will be used
+# You shouldn't need to make any changes here unless you are an advanced user
+
+knitr::opts_chunk$set(echo = TRUE, results = 'asis', cache.lazy = FALSE)
+#knitr::opts_chunk$set(dpi = 300, fig.width=8)
+
+# Checks if necessary packages are installed on the system, if not installs them
+# Need to be online for this to work, and may take some time the first time your run. Only required to install once
+# and will run much faster the second time
+list.of.packages <- c("tidyverse", "rmarkdown", "knitr", "ggthemes", "pander", "reshape2", "summarytools", 
+                      "lubridate", "RColorBrewer",  "googledrive", "flextable")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+# Loads the required packages
+library(tidyr)          # extra functions
+library(httr)           # accessing the Ona REST API
+library(jsonlite)       # parsing the JSON from the API
+library(stringr)        # format column names, label names, otherwise work with strings
+library(dplyr)          # data manipulation
+library(ggplot2)        # graphing
+library(rmarkdown)      # to generate the report
+library(knitr)          # making the final word document
+library(pander)         # markdown formatting
+library(ggthemes)       # extra themes for the graphics
+library(reshape2)       # for changing dfs from wide to long
+library(summarytools)   # on some machines this may require installing an Xquartz library locally
+library(lubridate)      # for date formatting
+library(RColorBrewer)   # for file path referencing
+library(googledrive)    # for retrieving files from GDrive
+library(flextable)      # for nice tables 
+
+# renv is used to track package dependencies and store a working snapshot that can always be used as a backup in case a package upgrade throws things off
+## renv::revert(commit = '')
+## renv::restore()
+
+# Sets global options for the document that control some appearance settings
+st_options(headings = F, footnote = NA, bootstrap.css = F)
+#more param options here https://bookdown.org/yihui/rmarkdown/params-knit.html#knit-with-custom-parameters
+
+```
+
+```{r ona_pull, include=FALSE}
+# This is where the data from Ona gets pulled into R for processing, or static files are uploaded
+# You shouldn't need to make any changes here. If you encounter errors with importing contact hcamp@mercycorps.org
+
+# GET the information from Ona, using the form_id, username and password params
+      # ona_raw_request <- GET(paste0("https://api.ona.io/api/v1/data/", "90026"),
+      #                       authenticate("hannalcamp", "Riverfloof"))
+
+# convert raw request to a dataframe
+      # df <- content(ona_raw_request,"text") %>%
+      #       fromJSON()
+
+# loading saved randomized df for demo purposees, if needed
+      df <- readRDS(file = "./data/testCashEmergencies.RDS")
+
+```
+
+```{r functions, include = FALSE}
+
+# This function makes the SADD categories when passed sex c(male, female, unknown) and age in years. The function may not be needed in all reports.
+
+source("./functions/generateYesNoDF_v2.R")
+source("./functions/format_chart.R")
+source("./functions/makeSADD.R")
+source("./functions/plotSingleVar.R")
+source("./functions/plotMultiVar.R")
+source("./functions/tableSingleVar.R")
+
+## Aesthetics
+# vector of MC colors for geographies, and regular 12-color palette
+  mcColors <- c(
+                "#c8102e", 
+                "#71757b",
+                "#33bfbb", 
+                "#ffdb33", 
+                "#9ac933", 
+                "#877fae",
+                "#d45c11")
+  
+  regColors = brewer.pal(12, "Paired")
+
+# flextable fit to page 
+  FitFlextableToPage <- function(ft, pgwidth = 6){
+
+      ft_out <- width(ft, width = dim(ft)$widths*pgwidth /(flextable_dim(ft)$widths))
+      return(ft_out)
+      
+    }
+
+```
+
+```{r pre_process, include = FALSE, cache = FALSE}
+
+#########################################################################################
+## authorize googledrive to access a document if needed - if previously authorized token should autorefresh
+  # drive_auth(
+  #   email = gargle::gargle_oauth_email(),
+  #   path = NULL,
+  #   scopes = "https://www.googleapis.com/auth/drive",
+  #   cache = gargle::gargle_oauth_cache(),
+  #   use_oob = gargle::gargle_oob_default(),
+  #   token = NULL
+  # )
+
+  ## download appropriate data dictionary Drive file by id and load as df
+  drive_download(drive_get(id = "16xTf6hQ1GUjQ6LWCkLzTh35iO9Ga9HcS",
+                           team_drive = "Technology for Development"),
+                      path = "codebook.xlsx",
+                      overwrite = T)
+  # for Canadian PDM
+  # drive_download(drive_get(id = "1e9Lnu1IRobEGIUgTzHOXLmJRgx3oaex1",
+  #                          team_drive = "Technology for Development"),
+  #                     path = "codebook.xlsx",
+  #                     overwrite = T)
+
+  data_dict <- readxl::read_excel("./codebook.xlsx", sheet = "survey") %>% 
+    select(which(colSums(!is.na(.)) > 0)) 
+  
+  codebook <- readxl::read_excel("./codebook.xlsx", sheet = "choices") %>% 
+    filter(!is.na(`list name`)) %>% 
+    select(which(colSums(!is.na(.)) > 0))
+
+#########################################################################################
+# filter the dataset to the time frame needed
+## putting dates into a useable format
+  df$ymdDate <- ymd(df$today)
+  df$month <- month(df$ymdDate)
+  df$monthName <- month.name[df$month]
+
+## filter df by monthsToRun param
+ df <- filter(df, month %in% c(10))
+
+#########################################################################################
+# clean up the data
+## trim whitespace from before and after a column's values if it is a character column
+  df <- df %>% 
+    mutate_if(is.character, trimws)
+
+## remove extraneous "xxx/" (indicating group names) from the variable names
+  names(df) <- gsub("^.+\\/", "", names(df))
+    
+## decode the select_one variables 
+### for now, select_multiple variables are decoded within chunks which use them
+  
+  ## find relevant variables with codes
+  codebook_vars <- unique(codebook$`list name`)
+  
+  # decode select_one vars fron codebook_vars
+  for (i in seq_along(codebook_vars)) {
+      
+      ## find variables that match the code
+      decode <- data_dict$name[grep(paste0("select_one ", codebook_vars[i]), data_dict$type)]
+      
+      ## get a snip of the codebook with only the codebook_var codes and values
+      codebook_snip <- filter(codebook, `list name` == codebook_vars[i]) %>% 
+          select(name, `label::English`)
+      
+      ## bulk replace in the dataset
+      df <- mutate_at(df,
+                        .vars = vars(one_of(decode)), 
+                        .funs = list(~ codebook_snip$`label::English`[match(., codebook_snip$name)]))
+    
+  }
+
+# ensure integer vars are formatted correctly
+      ## find integer variables
+      decode <- data_dict$name[grep("integer", data_dict$type)]
+      
+      ## bulk replace in the dataset
+      df <- mutate_at(df,
+                        .vars = vars(one_of(decode)), 
+                        .funs = list(~ as.integer()))
+  
+#########################################################################################
+## set disaggregation variables and store a table of the summary #s for each
+disagg1 <- "level_0_s"
+disagg2 <- "gender"
+
+respondents_perdisagg1 <- select(df, !!sym(disagg1)) %>% group_by(!!sym(disagg1)) %>% tally()
+respondents_perdisagg2 <- select(df, !!sym(disagg2)) %>% group_by(!!sym(disagg2)) %>% tally()
+
+# create Y/N lookup table for calculations
+lookup_yn <- data.frame(factor = c("Yes", "No"),
+                        value = c(1, 0))
+
+```
+
+
+# How to use this report
+
+##### This report is not a final PDM report. The charts and tables represent the most recent data, however, narrative and interpretation of the charts should be provided by someone with knowledge of the program to explain the reasons and interpretation behind the findings. Temporary text that is highlighted in yellow and italicized (like this text) helps to indicate where narrative could be provided. Be sure to delete all the temporary text before sharing with others!
+
+##### Text that is not highlighted is automatically generated, and the numbers within that non-highlighted text are automatically calculated based on your data. You may leave the non-highlighted text as is, delete it if you feel it is not useful, or add additional context to it.
+
+##### This section ("How to use this report") should be deleted prior to distribution of the final report.
+
+***
+
+# Background Information
+
+## Introduction
+
+##### Insert an overview of the response here.
+ 
+## Data Collection Methodology
+
+##### Insert an overview here of the methodology used for the data collection and the questionnaire used here.
+
+## Respondents covered in this report
+
+```{r tabledist, echo = FALSE, warning=F, message=F}
+
+# filter to Governorate and District, and make table
+
+table <- select(df, ymdDate, one_of(disagg1, disagg2)) %>% 
+  group_by(!!sym(disagg1), !!sym(disagg2)) %>%
+  summarise(`Distribution Round` = "",
+            `Data Collection Range` = paste(min(ymdDate), max(ymdDate), sep = " to "),
+            `Data Entry Range` = paste(min(ymdDate), max(ymdDate), sep = " to "),
+            n = n())
+
+pandoc.table(table, split.table = Inf)
+
+```
+
+## Sampling
+
+##### Provide technical information about the sampling strategy used.
+
+## Data Processing & Analysis  
+
+##### Review and confirm the below details.
+
+Data was collected using the Ona digital data collection software. Data was cleaned and analyzed using the R open-source software, and a template report was written in RMarkdown. Individual reports are the output of the template RMarkdown file (in which charts and tables are updated using the appropriate data for the period), and contextual/written analysis provided by the program Monitoring & Evaluation staff.
+
+## Limitations
+
+##### Detail any limitations of the data collected.
+
+## Acronyms  
+
+```{r tableacronyms, echo = FALSE}
+# add acronym to the first vector, following the pattern
+# add definition to the second vector, it is important that they are in the same order
+
+Acronyms <- c("UCT",
+              "IDP",
+              "HOH",
+              "MEL", 
+              "MPCA",
+              "SADD")
+
+Definitions <- c("Unconditional Cash Transfer",
+                 "Internally Displaced Person", 
+                 "Head of Household",
+                 "Monitoring, Evaluation, and Learning", 
+                 "Multi Purpose Cash Assistance",
+                 "Sex and Age Disaggregated Data")
+
+data.frame(Acronyms, Definitions) %>% kable()
+
+```
+
+***
+
+# Key Survey Findings
+
+#### Figure 1: Respondent satisfaction with the program (% who answered "very satisfied" to the questions)
+```{r, echo = FALSE, warning=F, message=F, fig.width=7, dpi = 600}
+
+# rev added to both the varsToChart and labels vectors because we're flipping the coordinates in the chart
+varsToChart <- rev(c("asst_recieve", "select_what", "select_fair", "reg_safe", "dist_safe",
+                     "carm_knowledge", "carm_safe", "carm_satisfaction"))
+
+labels <- select(filter(data_dict, name %in% varsToChart), name, `label::English`)
+
+ggplot(generateYesNoDF(df = df, grouping = disagg1, match_labels = labels, match_x = "variable", match_y = "name"), 
+       aes(x = `label::English`, y = value, fill = !!sym(disagg1))) +
+  geom_col(position = "dodge", alpha = .9) +
+  labs(x = "", 
+       y = "% of respondents") +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 40)) + 
+  coord_flip() +
+  format_chart(legend_pos = "bottom", legend_name = disagg1) +
+  facet_wrap(eval(expr(. ~ !!sym(disagg1))), labeller = labeller(groupwrap = label_wrap_gen(10)), ncol = 1) +
+  geom_text(aes(label = paste0(as.character(round(value, digits = 1)), "%")), position = position_dodge(width=0.9), size = 2.5) 
+  
+```
+
+***
